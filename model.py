@@ -10,11 +10,11 @@ class EMG128CAE(nn.Module):
     CON_PADDING = int((CON_KERNEL_SIZE-1)/2)
     POOL_KERNEL_SIZE = 2
     POOL_STRIDE = 2
-    # Upsampling mode, try "linear", "bilinear" or "bicubic". The latter is more time comsuming.
-    POOL_MODE = "bilinear"
+    # Upsampling mode, try "nearest", "bilinear" or "bicubic". The latter is more time comsuming.
+    POOL_MODE = "nearest"
     # bits: bits after quantization; input resolution bits = 16
 
-    def __init__(self, num_pooling=4, num_filter=2):
+    def __init__(self, num_pooling=3, num_filter=4):
         """
         num_pooling: the number of pooling layer
         num_filter: the number of convolution filter in the last layer
