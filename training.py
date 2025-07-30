@@ -11,19 +11,22 @@ from dataset import EMG128Dataset
 # --------- Config ---------
 KFOLDS = 4 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation
-EPOCHS = 30
-PATIENCE = 5
+EPOCHS = 50
+PATIENCE = 10
 BATCH_SIZE = 128
+CRITERION = nn.MSELoss() # nn.L1Loss() # nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 1e-5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=100)
 # --------------------------
 
 def training(train_loader, val_loader, fold):
     torch.manual_seed(fold)
-    model = EMG128CAE().to(DEVICE)
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    model = EMG128CAE(num_pooling=3, num_filter=2).to(DEVICE)
+    criterion = CRITERION
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     best_val_loss = float('inf')
     best_model_state = None
     no_improve_cnt = 0
@@ -54,6 +57,7 @@ def training(train_loader, val_loader, fold):
                 batch = batch.to(DEVICE)
                 outputs = model(batch)
                 loss = criterion(outputs, batch)
+                scheduler.step(val_loss)
 
                 val_loss += loss.item()
                 pbar.set_postfix(loss=loss.item())
@@ -73,6 +77,17 @@ def training(train_loader, val_loader, fold):
     torch.save(best_model_state, f"cae_fold{fold}.pth")
     print(f"Saved model for {fold} fold")
 
+"""
+model = EMG128CAE(num_pooling=3, num_filter=2).to(DEVICE)
+x = torch.randn(1, 1, 100, 128).to(DEVICE)
+for i, layer in enumerate(model.encoder):
+    x = layer(x)
+    print(f"shape of {i}: {x.shape}")
+for i, layer in enumerate(model.decoder):
+    x = layer(x)
+    print(f"shape of {i}: {x.shape}")
+exit(0)
+"""
 
 kf = KFold(n_splits=KFOLDS, shuffle=True, random_state=141)
 for fold, (indeces, _) in enumerate(kf.split(dataset), start=1):
