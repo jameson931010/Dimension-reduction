@@ -15,7 +15,6 @@ DATA_PATH = "/tmp2/b12902141/DR/CapgMyo-DB-a"
 WINDOW_SIZE = 100
 KFOLDS = 4 # KFold cross validation
 BATCH_SIZE = 128
-LEARNING_RATE = 1e-3
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # --------------------------
 
@@ -44,10 +43,10 @@ if __name__ == '__main__':
     if len(sys.argv) <= 1:
         print("Usage: python3 evaluation.py testing_name")
         exit(1)
-    dataset = EMG128Dataset(dataset_dir=DATA_PATH, window_size=WINDOW_SIZE)
+    dataset = EMG128Dataset(dataset_dir=DATA_PATH, window_size=WINDOW_SIZE)#, subject_list=[1])
     kf = KFold(n_splits=KFOLDS, shuffle=True, random_state=141)
 
-    for fold, (_, indeces) in enumerate(kf.split(dataset), start=1):
+    for fold, (train, indeces) in enumerate(kf.split(dataset), start=1):
         print(f"\nFold {fold}/{KFOLDS}")
 
         # Initialization
@@ -60,7 +59,7 @@ if __name__ == '__main__':
         plotted = False
 
         test_loader = DataLoader(Subset(dataset, indeces), batch_size=BATCH_SIZE)
-        model = EMG128CAE().to(DEVICE)
+        model = EMG128CAE(num_pooling=2, num_filter=2).to(DEVICE)
         model.load_state_dict(torch.load(f"cae_fold{fold}.pth", map_location=DEVICE))
         model.eval()
 
@@ -76,6 +75,17 @@ if __name__ == '__main__':
                     with open(f"result/{sys.argv[1]}", 'a') as f:
                         f.write(f"PRD for sample: {prd:.2f}%\n")
                     plot(original, reconstructed, f"{sys.argv[1]}_{fold}")
+
+                    """
+                    # Test training set
+                    original = dataset[train[0]][0].unsqueeze(0)
+                    reconstructed = model(original.to(DEVICE)).squeeze().cpu().numpy()
+                    original = original.squeeze().numpy()
+                    prd = 100 * np.sqrt(np.sum((original - reconstructed) ** 2) / np.sum(original ** 2))
+                    with open(f"result.txt", 'a') as f:
+                        f.write(f"PRD for sample: {prd:.2f}%\n")
+                    plot(original, reconstructed, f"train_{fold}")
+                    """
 
                 batch = batch.to(DEVICE)  # shape: (batch_size, 1, 100, 128)
                 recon = model(batch)

@@ -37,9 +37,9 @@ class EMG128Dataset(Dataset):
                     for i in range(0, 1000 - window_size + 1, window_size):
                         metadata = [subject_index, int(file_name[4:7]), int(file_name[8:10])] # [subject, gesture, repetition]
                         window = data[i:i+window_size, :] # (100, 128)
-                        # DC removal
-                        # window -= window.mean()
-                        # window /= window.std() + 1e-8
+                        # DC removal (channel-wise normalization)
+                        # window = (window - window.mean(axis=0, keepdims=True)) / window.std(axis=0, keepdims=True)
+                        window -= window.mean(axis=0, keepdims=True)
                         self.samples.append([torch.tensor(window, dtype=torch.float32).unsqueeze(0), metadata]) # (1, 100, 128)
 
     def __len__(self):
