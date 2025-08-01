@@ -43,7 +43,7 @@ if __name__ == '__main__':
     if len(sys.argv) <= 1:
         print("Usage: python3 evaluation.py testing_name")
         exit(1)
-    dataset = EMG128Dataset(dataset_dir=DATA_PATH, window_size=WINDOW_SIZE)#, subject_list=[1])
+    dataset = EMG128Dataset(dataset_dir=DATA_PATH, window_size=WINDOW_SIZE, subject_list=[1])
     kf = KFold(n_splits=KFOLDS, shuffle=True, random_state=141)
 
     for fold, (train, indeces) in enumerate(kf.split(dataset), start=1):
@@ -59,7 +59,7 @@ if __name__ == '__main__':
         plotted = False
 
         test_loader = DataLoader(Subset(dataset, indeces), batch_size=BATCH_SIZE)
-        model = EMG128CAE(num_pooling=2, num_filter=2).to(DEVICE)
+        model = EMG128CAE(num_pooling=2, num_filter=4).to(DEVICE)
         model.load_state_dict(torch.load(f"cae_fold{fold}.pth", map_location=DEVICE))
         model.eval()
 
@@ -122,3 +122,9 @@ if __name__ == '__main__':
             f.write(f"  PRD: {prd:.2f} %\n")
             f.write(f"  CR: {cr:.2f}\n")
             f.write(f"  QS: {qs:.4f}\n")
+        print(f"Evaluation Results for {fold} fold:\n")
+        print(f"  Avg MSE: {avg_mse:.6f}\n")
+        print(f"  Avg SNR: {avg_snr:.2f} dB\n")
+        print(f"  PRD: {prd:.2f} %\n")
+        print(f"  CR: {cr:.2f}\n")
+        print(f"  QS: {qs:.4f}\n")

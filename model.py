@@ -11,7 +11,7 @@ class EMG128CAE(nn.Module):
     POOL_KERNEL_SIZE = 2
     POOL_STRIDE = 2
     # Upsampling mode, try "nearest", "bilinear" or "bicubic". The latter is more time comsuming.
-    # POOL_MODE = "nearest"
+    POOL_MODE = "bilinear"
     # bits: bits after quantization; input resolution bits = 16
 
     def __init__(self, num_pooling=3, num_filter=2):
@@ -38,16 +38,17 @@ class EMG128CAE(nn.Module):
             ] * (num_pooling - 1)),
 
             # Last convolution layer
-            nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.BatchNorm2d(num_filter),
-            nn.ReLU()
+            nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
+            #nn.BatchNorm2d(num_filter)
+            #nn.ReLU()
         )
 
         decoder_layers = []
 
         # First layer
         decoder_layers.extend([
-            nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            #nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.Conv2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU()
         ])
@@ -57,9 +58,10 @@ class EMG128CAE(nn.Module):
         for layer in range(num_pooling-1):
             additional_padding = (int(self.INPUT_TIME_DIM//power) & 1, int(self.INPUT_CHANNEL_DIM//power) & 1) # whether downsampling have lose 1 dimension
             decoder_layers.extend([
-                # nn.Upsample(size=(int(self.INPUT_TIME_DIM//power), int(self.INPUT_CHANNEL_DIM//power)), mode=self.POOL_MODE),
+                #nn.Upsample(size=(int(self.INPUT_TIME_DIM//power), int(self.INPUT_CHANNEL_DIM//power)), mode=self.POOL_MODE),
                 nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
-                nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+                #nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+                nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU()
             ])
@@ -68,9 +70,10 @@ class EMG128CAE(nn.Module):
         # Final layer
         additional_padding = (int(self.INPUT_TIME_DIM//power) & 1, int(self.INPUT_CHANNEL_DIM//power) & 1)
         decoder_layers.extend([
-            # nn.Upsample(size=(self.INPUT_TIME_DIM, self.INPUT_CHANNEL_DIM), mode=self.POOL_MODE),
+            #nn.Upsample(size=(self.INPUT_TIME_DIM, self.INPUT_CHANNEL_DIM), mode=self.POOL_MODE),
             nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
-            nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
+            #nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
+            nn.Conv2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
         ])
 
         self.decoder = nn.Sequential(*decoder_layers)
