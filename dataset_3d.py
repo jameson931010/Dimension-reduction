@@ -40,6 +40,8 @@ class EMG128Dataset(Dataset):
                         # DC removal (channel-wise normalization)
                         # window = (window - window.mean(axis=0, keepdims=True)) / window.std(axis=0, keepdims=True)
                         window -= window.mean(axis=0, keepdims=True)
+                        #self.reshape(window)
+                        window = window.reshape(100, 8, 16, order='F')
                         self.samples.append([torch.tensor(window, dtype=torch.float32).unsqueeze(0), metadata]) # (1, 100, 128)
 
     def __len__(self):
@@ -47,6 +49,15 @@ class EMG128Dataset(Dataset):
 
     def __getitem__(self, idx):
         return self.samples[idx]
+
+    def reshape(self, array):
+        result = []
+        for t in array:
+            reshaped = []
+            for row in range(16):
+                reshaped.append(t[row*8 : row*8+8])
+            t.append(reshaped)
+        return result
 
 if __name__ == '__main__':
     mat = scipy.io.loadmat('CapgMyo-DB-a/dba-s1/001-001-001.mat')

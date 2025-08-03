@@ -4,8 +4,8 @@ import torch
 from torch.utils.data import DataLoader, Subset
 import torch.nn.functional as F
 from sklearn.model_selection import KFold
-from model import EMG128CAE
-from dataset import EMG128Dataset
+from model_3d import EMG128CAE
+from dataset_3d import EMG128Dataset
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -14,18 +14,18 @@ import matplotlib.pyplot as plt
 DATA_PATH = "/tmp2/b12902141/DR/CapgMyo-DB-a"
 WINDOW_SIZE = 100
 KFOLDS = 4 # KFold cross validation
-BATCH_SIZE = 128
+BATCH_SIZE = 4
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # --------------------------
 
 def plot(original, recon, title):
-    CHANNELS_TO_PLOT = [0, 32, 64, 96, 127]
+    CHANNELS_TO_PLOT = [0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19]
     plt.figure(figsize=(14, 2 * len(CHANNELS_TO_PLOT)))
 
     for i, ch in enumerate(CHANNELS_TO_PLOT):
         plt.subplot(len(CHANNELS_TO_PLOT), 1, i+1)
-        plt.plot(original[:, ch], label="Original", color="black", linewidth=1)
-        plt.plot(reconstructed[:, ch], label="Reconstructed", color="red", linestyle='--', linewidth=1)
+        plt.plot(original[:, ch%8, ch//8], label="Original", color="black", linewidth=1)
+        plt.plot(reconstructed[:, ch%8, ch//8], label="Reconstructed", color="red", linestyle='--', linewidth=1)
         plt.title(f"Channel {ch}")
         plt.xlabel("Time (samples)")
         plt.ylabel("Amplitude")
@@ -47,6 +47,8 @@ if __name__ == '__main__':
     kf = KFold(n_splits=KFOLDS, shuffle=True, random_state=141)
 
     for fold, (train, indeces) in enumerate(kf.split(dataset), start=1):
+        if fold ==3:
+            break
         print(f"\nFold {fold}/{KFOLDS}")
 
         # Initialization
@@ -59,7 +61,7 @@ if __name__ == '__main__':
         plotted = False
 
         test_loader = DataLoader(Subset(dataset, indeces), batch_size=BATCH_SIZE)
-        model = EMG128CAE(num_pooling=2, num_filter=4).to(DEVICE)
+        model = EMG128CAE(num_pooling=2, num_filter=2).to(DEVICE)
         model.load_state_dict(torch.load(f"cae_fold{fold}.pth", map_location=DEVICE))
         model.eval()
 
