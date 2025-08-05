@@ -25,6 +25,10 @@ class EMG128CAE(nn.Module):
         self.encoder = nn.Sequential(
             # First layer
             nn.Conv2d(1, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING), # Zero_padded by default
+            #nn.Conv2d(1, self.FILTER_NUM//2, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING), # Zero_padded by default
+            #nn.BatchNorm2d(self.FILTER_NUM),
+            #nn.ReLU(),
+            #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE),
@@ -32,6 +36,9 @@ class EMG128CAE(nn.Module):
 
             # Intermediate layer
             *([
+                #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+                #nn.BatchNorm2d(self.FILTER_NUM),
+                #nn.ReLU(),
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU(),
@@ -40,9 +47,13 @@ class EMG128CAE(nn.Module):
             ] * (num_pooling - 1)),
 
             # Last convolution layer
-            nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
-            #nn.BatchNorm2d(num_filter)
-            #nn.ReLU()
+            #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            #nn.BatchNorm2d(self.FILTER_NUM),
+            #nn.ReLU(),
+            nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            #nn.BatchNorm2d(num_filter),
+            #nn.ReLU(),
+            #nn.Conv2d(num_filter, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
         )
 
         decoder_layers = []
@@ -51,6 +62,9 @@ class EMG128CAE(nn.Module):
         decoder_layers.extend([
             #nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.Conv2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            #nn.BatchNorm2d(self.FILTER_NUM),
+            #nn.ReLU(),
+            #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU()
         ])
@@ -63,6 +77,9 @@ class EMG128CAE(nn.Module):
                 #nn.Upsample(size=(int(self.INPUT_TIME_DIM//power), int(self.INPUT_CHANNEL_DIM//power)), mode=self.POOL_MODE),
                 nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
                 #nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+                #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+                #nn.BatchNorm2d(self.FILTER_NUM),
+                #nn.ReLU(),
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU()
@@ -74,6 +91,9 @@ class EMG128CAE(nn.Module):
         decoder_layers.extend([
             #nn.Upsample(size=(self.INPUT_TIME_DIM, self.INPUT_CHANNEL_DIM), mode=self.POOL_MODE),
             nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
+            #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            #nn.BatchNorm2d(self.FILTER_NUM),
+            #nn.ReLU(),
             #nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
             nn.Conv2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
         ])

@@ -6,8 +6,8 @@ from sklearn.model_selection import KFold
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
-from model_3d import EMG128CAE
-from dataset_3d import EMG128Dataset
+from model import EMG128CAE
+from dataset import EMG128Dataset
 
 # --------- Config ---------
 KFOLDS = 4 # KFold cross validation
@@ -24,7 +24,7 @@ dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_si
 
 def training(train_loader, val_loader, fold):
     torch.manual_seed(fold)
-    model = EMG128CAE(num_pooling=2, num_filter=2).to(DEVICE)
+    model = EMG128CAE(num_pooling=4, num_filter=2).to(DEVICE)
     criterion = CRITERION
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)#, weight_decay=WEIGHT_DECAY)
     #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)

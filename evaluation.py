@@ -4,8 +4,8 @@ import torch
 from torch.utils.data import DataLoader, Subset
 import torch.nn.functional as F
 from sklearn.model_selection import KFold
-from model_3d import EMG128CAE
-from dataset_3d import EMG128Dataset
+from model import EMG128CAE
+from dataset import EMG128Dataset
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -24,8 +24,8 @@ def plot(original, recon, title):
 
     for i, ch in enumerate(CHANNELS_TO_PLOT):
         plt.subplot(len(CHANNELS_TO_PLOT), 1, i+1)
-        plt.plot(original[:, ch%8, ch//8], label="Original", color="black", linewidth=1)
-        plt.plot(reconstructed[:, ch%8, ch//8], label="Reconstructed", color="red", linestyle='--', linewidth=1)
+        plt.plot(original[:, ch], label="Original", color="black", linewidth=1)
+        plt.plot(reconstructed[:, ch], label="Reconstructed", color="red", linestyle='--', linewidth=1)
         plt.title(f"Channel {ch}")
         plt.xlabel("Time (samples)")
         plt.ylabel("Amplitude")
@@ -61,7 +61,7 @@ if __name__ == '__main__':
         plotted = False
 
         test_loader = DataLoader(Subset(dataset, indeces), batch_size=BATCH_SIZE)
-        model = EMG128CAE(num_pooling=2, num_filter=2).to(DEVICE)
+        model = EMG128CAE(num_pooling=4, num_filter=2).to(DEVICE)
         model.load_state_dict(torch.load(f"cae_fold{fold}.pth", map_location=DEVICE))
         model.eval()
 
