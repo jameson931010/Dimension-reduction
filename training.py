@@ -6,13 +6,13 @@ from sklearn.model_selection import KFold
 import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
-from model import EMG128CAE
+from full_model import EMG128CAE
 from dataset import EMG128Dataset
 
 # --------- Config ---------
 KFOLDS = 4 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation
-EPOCHS = 250
+EPOCHS = 500
 PATIENCE = 50
 BATCH_SIZE = 4
 CRITERION = nn.SmoothL1Loss() # nn.L1Loss() # nn.MSELoss(), nn.SmoothL1Loss()
@@ -67,6 +67,7 @@ def training(train_loader, val_loader, fold):
             f.write(f"Epoch [{epoch}/{EPOCHS}], Training Loss: {train_loss/len(train_loader):.6f}, Validation Loss: {val_loss/len(val_loader):.6f}\n")
 
         # Early stopping
+        """
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_model_state = model.state_dict()
@@ -77,6 +78,8 @@ def training(train_loader, val_loader, fold):
                 with open(f"log/{sys.argv[1]}.log", 'a') as f:
                     f.write(f"Early stopping at epoch {epoch}\n")
                 break
+        """
+    best_model_state = model.state_dict()
     torch.save(best_model_state, f"cae_fold{fold}.pth")
     with open(f"log/{sys.argv[1]}.log", 'a') as f:
         f.write(f"Saved model for {fold} fold\n")
