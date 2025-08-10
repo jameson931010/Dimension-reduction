@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class EMG128CAE(nn.Module):
     INPUT_TIME_DIM = 100
     INPUT_CHANNEL_DIM = 128
-    FILTER_NUM = 64 # The number of convolution filter in intermediate layer
+    FILTER_NUM = 16 # The number of convolution filter in intermediate layer
     CON_KERNEL_SIZE = 3
     CON_PADDING = int((CON_KERNEL_SIZE-1)/2)
     POOL_KERNEL_SIZE = 2
@@ -27,10 +27,10 @@ class EMG128CAE(nn.Module):
             nn.Conv2d(1, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING), # Zero_padded by default
             #nn.Conv2d(1, self.FILTER_NUM//2, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING), # Zero_padded by default
             #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.ReLU(),
+            #nn.LeakyReLU(),
             #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE),
             #nn.MaxPool2d(kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE),
 
@@ -38,10 +38,10 @@ class EMG128CAE(nn.Module):
             *([
                 #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 #nn.BatchNorm2d(self.FILTER_NUM),
-                #nn.ReLU(),
+                #nn.LeakyReLU(),
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 nn.BatchNorm2d(self.FILTER_NUM),
-                nn.ReLU(),
+                nn.LeakyReLU(),
                 #nn.MaxPool2d(kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
             ] * (num_pooling - 1)),
@@ -49,13 +49,13 @@ class EMG128CAE(nn.Module):
             # Last convolution layer
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             #nn.BatchNorm2d(num_filter),
-            #nn.ReLU(),
+            #nn.LeakyReLU(),
             #nn.Conv2d(num_filter, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
         )
 
@@ -66,10 +66,10 @@ class EMG128CAE(nn.Module):
             #nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.Conv2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.ReLU(),
+            #nn.LeakyReLU(),
             #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU()
+            nn.LeakyReLU()
         ])
 
         # Intermediate layer
@@ -82,10 +82,10 @@ class EMG128CAE(nn.Module):
                 #nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 #nn.BatchNorm2d(self.FILTER_NUM),
-                #nn.ReLU(),
+                #nn.LeakyReLU(),
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 nn.BatchNorm2d(self.FILTER_NUM),
-                nn.ReLU()
+                nn.LeakyReLU()
             ])
             power //= 2
 
@@ -96,10 +96,10 @@ class EMG128CAE(nn.Module):
             nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU(),
+            nn.LeakyReLU(),
             #nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
             nn.Conv2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
         ])

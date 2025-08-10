@@ -49,13 +49,16 @@ class EMG128Dataset(Dataset):
                 mat = scipy.io.loadmat(os.path.join(subject_path, file_name))
                 data = mat['data']  # shape: (1000, 128)
                 mean = data.mean(axis=0, keepdims=True)
-                std = data.std()
+                std = data.std(axis=0, keepdims=True)
+                #mean = data.mean()
+                #std = data.std()
                 for i in range(0, SAMPLE_LEN - window_size + 1, window_size):
                     window = data[i:i+window_size, :] # (100, 128)
                     # channel-wise DC removal and normalization on the whole data
-                    #window -= window.mean(axis=0, keepdims=True)
-                    #window = (window - window.mean(axis=0, keepdims=True)) / window.std(axis=0, keepdims=True)
-                    #window = (window - window.mean(axis=0, keepdims=True)) / max(abs(window.max()), abs(window.min()))
+                    #mean = window.mean(axis=0, keepdims=True)
+                    #std = window.std(axis=0, keepdims=True)
+                    #mean = window.mean()
+                    #std = window.std()
                     window = (window - mean) / std
                     self.samples[subject_index][index_base + i//window_size] = torch.tensor(window, dtype=torch.float32).unsqueeze(0) # (1, 100, 128)
 

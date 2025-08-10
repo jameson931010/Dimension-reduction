@@ -16,22 +16,22 @@ from plot import plot_channel, plot_heatmap, plot_metric
 # --------- Config ---------
 KFOLDS = 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation
-EPOCHS = 50
+EPOCHS = 500
 PATIENCE = 25
 BATCH_SIZE = 10 # Should be a multiple of the number of window within a .mat file 
 CRITERION = nn.SmoothL1Loss() # nn.L1Loss() # nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 2e-4
 WEIGHT_DECAY = 1e-5
 
-NUM_POOLING = 2
-NUM_FILTER = 4
+NUM_POOLING = 3
+NUM_FILTER = 2
 
 random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
-SUBJECT_LIST = [1]
-FIRST_N_GESTURE = 2
+SUBJECT_LIST = [1] #[x for x in range(1, 19)]
+FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_wd{WEIGHT_DECAY}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 EARLY_STOPPING = True
