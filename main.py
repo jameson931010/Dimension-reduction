@@ -9,7 +9,7 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from model import EMG128CAE
+from model_1d import EMG128CAE
 from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
 
@@ -23,15 +23,15 @@ CRITERION = nn.SmoothL1Loss() # nn.L1Loss() # nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 2e-4
 WEIGHT_DECAY = 1e-5
 
-NUM_POOLING = 3
-NUM_FILTER = 2
+NUM_POOLING = 2
+NUM_FILTER = 4
 
 random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
 SUBJECT_LIST = [1] #[x for x in range(1, 19)]
-FIRST_N_GESTURE = 8
+FIRST_N_GESTURE = 2
 NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_wd{WEIGHT_DECAY}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 EARLY_STOPPING = True
@@ -123,7 +123,8 @@ def evaluation(model, data_loader, name, plot=True):
     model.eval()
     with torch.no_grad():
         batch = next(iter(data_loader)).to(DEVICE)
-        CR = batch.shape[0] / model.encoder(batch).numel()
+        #CR = batch.shape[0] / model.encoder(batch).numel()
+        CR = batch.shape[0] / model.encoder(batch.squeeze(1).permute(0, 2, 1)).numel()
         if plot:
             original = batch[0].squeeze().cpu().numpy()
             reconstructed = model(batch[0].unsqueeze(0)).squeeze().cpu().numpy()
@@ -150,6 +151,7 @@ def evaluation(model, data_loader, name, plot=True):
             #QS[cnt] = qs
             cnt += 1
 
+        dual_print(f"   CR: {CR:.2f}")
         dual_print(f"   PRDN: {PRDN.mean():.3f}")
         dual_print(f"   SNR: {SNR.mean():.3f}")
         #dual_print(f"   QS: {QS.mean():.3f}")
@@ -167,12 +169,16 @@ def evaluation(model, data_loader, name, plot=True):
 def check_dimension():
     model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
     x = torch.randn(1, 1, 100, 128).to(DEVICE)
+    #x = x.squeeze(1).permute(0, 2, 1)
+    print(f"shape: {x.shape}")
     for i, layer in enumerate(model.encoder):
         x = layer(x)
         print(f"shape of {i}: {x.shape}")
     for i, layer in enumerate(model.decoder):
         x = layer(x)
         print(f"shape of {i}: {x.shape}")
+    #x = x.permute(0, 2, 1).unsqueeze(1)
+    print(f"shape: {x.shape}")
     exit(0)
 
 def dual_print(mes):
@@ -214,4 +220,5 @@ if __name__ == '__main__':
                     else:
                         train_idx.extend([idx_base + i for i in range(dataset.window_num)])
 
+        #check_dimension()
         process_one_fold(train_idx, val_idx, test_idx, fold)
