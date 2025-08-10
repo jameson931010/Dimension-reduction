@@ -31,9 +31,6 @@ class EMG128CAE(nn.Module):
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU(),
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE),
             #nn.MaxPool2d(kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE),
 
@@ -45,14 +42,14 @@ class EMG128CAE(nn.Module):
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU(),
-                nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                nn.BatchNorm2d(self.FILTER_NUM),
-                nn.ReLU(),
                 #nn.MaxPool2d(kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
             ] * (num_pooling - 1)),
 
             # Last convolution layer
+            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.BatchNorm2d(self.FILTER_NUM),
+            nn.ReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU(),
@@ -78,9 +75,6 @@ class EMG128CAE(nn.Module):
             nn.ReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
-            nn.ReLU(),
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU()
         ])
 
@@ -97,9 +91,6 @@ class EMG128CAE(nn.Module):
                 nn.ReLU(),
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
                 nn.BatchNorm2d(self.FILTER_NUM),
-                nn.ReLU(),
-                nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU()
             ])
             power /= 2
@@ -109,6 +100,9 @@ class EMG128CAE(nn.Module):
         decoder_layers.extend([
             #nn.Upsample(size=(self.INPUT_TIME_DIM, self.INPUT_CHANNEL_DIM), mode=self.POOL_MODE),
             nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
+            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.BatchNorm2d(self.FILTER_NUM),
+            nn.ReLU(),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU(),

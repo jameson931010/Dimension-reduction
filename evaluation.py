@@ -45,7 +45,7 @@ def plot_heatmap(original, reconstructed, title):
     plt.close()
 
 def plot(original, recon, title):
-    CHANNELS_TO_PLOT = [0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19]
+    CHANNELS_TO_PLOT = [0, 1, 2, 6, 7, 8, 9, 10, 14, 15, 16, 17]
     plt.figure(figsize=(14, 2 * len(CHANNELS_TO_PLOT)))
 
     for i, ch in enumerate(CHANNELS_TO_PLOT):
@@ -99,7 +99,7 @@ if __name__ == '__main__':
 
         train_loader = DataLoader(Subset(dataset, train[int(len(train)*0.1):]), batch_size=BATCH_SIZE)
         test_loader = DataLoader(Subset(dataset, indeces), batch_size=BATCH_SIZE)
-        model = EMG128CAE(num_pooling=3, num_filter=2).to(DEVICE)
+        model = EMG128CAE(num_pooling=2, num_filter=4).to(DEVICE)
         model.load_state_dict(torch.load(f"cae_fold{fold}.pth", map_location=DEVICE))
         model.eval()
 
@@ -115,7 +115,7 @@ if __name__ == '__main__':
                     with open(f"result/train_{args.name}", 'a') as f:
                         f.write(f"PRD for sample: {prd:.2f}%\n")
                     plot(original, reconstructed, f"{args.name}_train_{fold}")
-                    if args.heatmap:
+                    if not args.heatmap:
                         plot_heatmap(original, reconstructed, f"{args.name}_train_{fold}")
 
                 batch = batch.to(DEVICE)  # shape: (batch_size, 1, 100, 128)
@@ -145,7 +145,7 @@ if __name__ == '__main__':
                     with open(f"result/{args.name}", 'a') as f:
                         f.write(f"PRD for sample: {prd:.2f}%\n")
                     plot(original, reconstructed, f"{args.name}_{fold}")
-                    if args.heatmap:
+                    if not args.heatmap:
                         plot_heatmap(original, reconstructed, f"{args.name}_{fold}")
 
                     """

@@ -41,6 +41,9 @@ class EMG128CAE(nn.Module):
             ] * (num_pooling - 1)),
 
             # Last convolution layer
+            nn.Conv3d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.BatchNorm3d(self.FILTER_NUM),
+            nn.ReLU(),
             nn.Conv3d(self.FILTER_NUM, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
             #nn.BatchNorm3d(num_filter)
             #nn.ReLU()
@@ -68,7 +71,7 @@ class EMG128CAE(nn.Module):
                 nn.BatchNorm3d(self.FILTER_NUM),
                 nn.ReLU()
             ])
-            power /= 2
+            power //= 2
 
         # Final layer
         additional_padding = (int(self.INPUT_TIME_DIM//power) & 1, int(self.INPUT_R_DIM//power) & 1, int(self.INPUT_C_DIM//power) & 1) # whether downsampling have lose 1 dimension
@@ -76,6 +79,9 @@ class EMG128CAE(nn.Module):
             #nn.Upsample(size=(self.INPUT_TIME_DIM, self.INPUT_CHANNEL_DIM), mode=self.POOL_MODE),
             nn.ConvTranspose3d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
             #nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
+            nn.Conv3d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.BatchNorm3d(self.FILTER_NUM),
+            nn.ReLU(),
             nn.Conv3d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
         ])
 
