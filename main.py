@@ -23,15 +23,15 @@ CRITERION = nn.SmoothL1Loss() # nn.L1Loss() # nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 2e-4
 WEIGHT_DECAY = 1e-5
 
-NUM_POOLING = 2
-NUM_FILTER = 4
+NUM_POOLING = 4
+NUM_FILTER = 2
 
 random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
 SUBJECT_LIST = [1] #[x for x in range(1, 19)]
-FIRST_N_GESTURE = 2
+FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_wd{WEIGHT_DECAY}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 EARLY_STOPPING = True
@@ -63,8 +63,8 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
 
 def training(model, train_loader, val_loader):
     criterion = CRITERION
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)#, weight_decay=WEIGHT_DECAY)
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     best_val_loss = float('inf')
     best_model_state = None

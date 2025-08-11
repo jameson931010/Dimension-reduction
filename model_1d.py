@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class EMG128CAE(nn.Module):
     INPUT_TIME_DIM = 100
     INPUT_CHANNEL_DIM = 128
-    #FILTER_NUM = 16 # The number of convolution filter in intermediate layer
+    FILTER_NUM = 16 # The number of convolution filter in intermediate layer
     CON_KERNEL_SIZE = 3
     CON_PADDING = int((CON_KERNEL_SIZE-1)/2)
     POOL_KERNEL_SIZE = 2
@@ -25,54 +25,71 @@ class EMG128CAE(nn.Module):
         encoder_layers = []
 
         # Encoder
-        # First n-1 layer
+        # First layer
         dim = self.INPUT_CHANNEL_DIM # The following assumes that dim is a power of 2
-        for layer in range(num_pooling):
-            encoder_layers.extend([
-                nn.Conv1d(dim, dim, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                nn.BatchNorm1d(dim),
-                nn.LeakyReLU(),
-                nn.Conv1d(dim, dim//2, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
-            ])
-            dim //= 2
-
-        """
-        # Last convolution layer
         encoder_layers.extend([
             nn.Conv1d(dim, dim, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
             nn.BatchNorm1d(dim),
             nn.LeakyReLU(),
-            nn.Conv1d(dim, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
+            nn.Conv1d(dim, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
         ])
-        """
+
+        # Intermediate layers
+        for layer in range(num_pooling):
+            encoder_layers.extend([
+                #nn.Conv1d(dim*self.FILTER_NUM, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+                #nn.BatchNorm1d(dim*self.FILTER_NUM),
+                #nn.LeakyReLU(),
+                nn.Conv1d(dim*self.FILTER_NUM, dim//2*self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
+            ])
+            dim //= 2
+
+        # Last convolution layer
+        encoder_layers.extend([
+            #nn.Conv1d(dim*self.FILTER_NUM, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            #nn.BatchNorm1d(dim*self.FILTER_NUM),
+            #nn.LeakyReLU(),
+            nn.Conv1d(dim*self.FILTER_NUM, dim*num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
+        ])
 
         self.encoder = nn.Sequential(*encoder_layers)
 
         decoder_layers = []
 
         # First layer
-        power = 2 ** (num_pooling - 1)
-        """
-        additional_padding = int(self.INPUT_TIME_DIM//power) & 1 # whether downsampling have lose 1 dimension
         decoder_layers.extend([
-            nn.Conv1d(num_filter, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.BatchNorm1d(num_filter),
-            nn.LeakyReLU(),
-            nn.ConvTranspose1d(num_filter, dim, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding)
+            #nn.Conv1d(dim*num_filter, dim*num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            #nn.BatchNorm1d(dim*num_filter),
+            #nn.LeakyReLU(),
+            nn.Conv1d(dim*num_filter, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
         ])
-        """
 
-        # Other layers
+        # Intermediate layers
+        power = 2 ** (num_pooling-1)
         for layer in range(num_pooling):
             additional_padding = int(self.INPUT_TIME_DIM//power) & 1 # whether downsampling have lose 1 dimension
             decoder_layers.extend([
-                nn.Conv1d(dim, dim, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                nn.BatchNorm1d(dim),
+                #nn.Conv1d(dim*self.FILTER_NUM, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+                nn.BatchNorm1d(dim*self.FILTER_NUM),
                 nn.LeakyReLU(),
-                nn.ConvTranspose1d(dim, dim*2, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding)
+                nn.ConvTranspose1d(dim*self.FILTER_NUM, dim*2*self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding)
             ])
             power //= 2
             dim *= 2
+
+        # Final layer
+        decoder_layers.extend([
+            nn.Conv1d(dim*self.FILTER_NUM, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.BatchNorm1d(dim*self.FILTER_NUM),
+            nn.LeakyReLU(),
+            nn.Conv1d(dim*self.FILTER_NUM, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.BatchNorm1d(dim*self.FILTER_NUM),
+            nn.LeakyReLU(),
+            nn.Conv1d(dim*self.FILTER_NUM, dim*self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+            nn.BatchNorm1d(dim*self.FILTER_NUM),
+            nn.LeakyReLU(),
+            nn.Conv1d(dim*self.FILTER_NUM, dim, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
+        ])
 
         self.decoder = nn.Sequential(*decoder_layers)
 
