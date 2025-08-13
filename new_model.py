@@ -26,11 +26,11 @@ class EMG128CAE(nn.Module):
         for _ in range(num_pooling):
             enc_blocks.append(nn.Sequential(
                 nn.Conv2d(in_ch, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-                #nn.BatchNorm2d(self.FILTER_NUM),
+                nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU(inplace=True),
                 #nn.LeakyReLU(inplace=True),
                 nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-                #nn.BatchNorm2d(self.FILTER_NUM),
+                nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU(inplace=True),
                 #nn.LeakyReLU(inplace=True),
             ))
@@ -43,11 +43,8 @@ class EMG128CAE(nn.Module):
         # Project to code
         self.to_code = nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.K, padding=self.P)
         self.from_code = nn.Sequential(
-            #nn.BatchNorm2d(num_filter),
-            #nn.ReLU(inplace=True),
-            #nn.LeakyReLU(inplace=True),
             nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.K, padding=self.P, stride=1),
-            #nn.BatchNorm2d(self.FILTER_NUM),
+            nn.BatchNorm2d(self.FILTER_NUM),
             nn.ReLU(inplace=True),
             #nn.LeakyReLU(inplace=True),
         )
@@ -58,11 +55,11 @@ class EMG128CAE(nn.Module):
             unpools.append(nn.MaxUnpool2d(kernel_size=self.POOL_K, stride=self.POOL_S))
             dec_blocks.append(nn.Sequential(
                 nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-                #nn.BatchNorm2d(self.FILTER_NUM),
+                nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU(inplace=True),
                 #nn.LeakyReLU(inplace=True),
                 nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-                #nn.BatchNorm2d(self.FILTER_NUM),
+                nn.BatchNorm2d(self.FILTER_NUM),
                 nn.ReLU(inplace=True),
                 #nn.LeakyReLU(inplace=True),
             ))
@@ -86,12 +83,13 @@ class EMG128CAE(nn.Module):
         return h
 
     def decode(self, h: torch.Tensor) -> torch.Tensor:
-        h = self.from_code(code)
+        h = self.from_code(h)
         for i in reversed(range(len(self.decoder_blocks))):
             h = self.decoder_unpools[i](h, self._pool_indices[i], output_size=self._prepool_sizes[i])
             h = self.decoder_blocks[i](h)
 
-        out = self.reconstruct(h)
+        h = self.reconstruct(h)
+        return h
 
 
     def forward(self, x):
@@ -99,6 +97,6 @@ class EMG128CAE(nn.Module):
         self._prepool_sizes.clear()
 
         h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]
-        code = encode(h)
-        out = decode(code)
+        code = self.encode(h)
+        out = self.decode(code)
         return out

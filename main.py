@@ -9,17 +9,17 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from model import EMG128CAE
+from third_model import EMG128CAE
 from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
 
 # --------- Config ---------
 KFOLDS = 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation
-EPOCHS = 800
+EPOCHS = 1600
 PATIENCE = 40
-BATCH_SIZE = 128 # Should be a multiple of the number of window within a .mat file 
-CRITERION = nn.SmoothL1Loss() # nn.L1Loss() # nn.MSELoss(), nn.SmoothL1Loss()
+BATCH_SIZE = 10 # Should be a multiple of the number of window within a .mat file 
+CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 0 #1e-4
 
@@ -37,7 +37,7 @@ dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_si
 EARLY_STOPPING = True
 NOT_ALL_KFOLD = True
 PRINT_TRAIN = True
-PLOT_METRIC = True
+PLOT_METRIC = False
 # --------------------------
 
 def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
@@ -51,9 +51,8 @@ def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
     if train:
         model_state = training(model, train_loader, val_loader)
         torch.save(model_state, f"cae_fold{fold}.pth")
-
-    with open(f"log/{sys.argv[1]}.log", 'a') as f:
-        f.write(f"Model saved for {fold} fold\n")
+        with open(f"log/{sys.argv[1]}.log", 'a') as f:
+            f.write(f"Model saved for {fold} fold\n")
 
     # Evaluation
     ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
@@ -125,7 +124,7 @@ def evaluation(model, data_loader, name, plot=True):
     model.eval()
     with torch.no_grad():
         batch = next(iter(data_loader)).to(DEVICE)
-        code_size = model.encoder(batch)[0].numel()
+        code_size = model.encode(batch)[0].numel()
         CR = model.INPUT_TIME_DIM * model.INPUT_CHANNEL_DIM / code_size # Not considering quantization
         #CR = batch.shape[0] / model.encoder(batch).numel()
         #CR = batch.shape[0] / model.encoder(batch.squeeze(1).permute(0, 2, 1)).numel()
