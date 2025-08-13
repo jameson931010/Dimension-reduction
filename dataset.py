@@ -25,6 +25,7 @@ class EMG128Dataset(Dataset):
         ......
         """
         self.window_num = SAMPLE_LEN // window_size # The number of window within a .mat file (10)
+        #self.window_num = 4 * SAMPLE_LEN // window_size -3 # The number of window within a .mat file (10)
         self.subject_len = first_n_gesture * REPETITION * self.window_num # The number of sample that belongs to one subject (800)
         self.samples = {i:[None for j in range(self.subject_len)] for i in subject_list} # (18, 800)
         
@@ -60,6 +61,7 @@ class EMG128Dataset(Dataset):
                     #mean = window.mean()
                     #std = window.std()
                     window = (window - mean) / std
+                    #self.samples[subject_index][index_base + i//(window_size//4)] = torch.tensor(window, dtype=torch.float32).unsqueeze(0) # (1, 100, 128)
                     self.samples[subject_index][index_base + i//window_size] = torch.tensor(window, dtype=torch.float32).unsqueeze(0) # (1, 100, 128)
 
     def __len__(self):
