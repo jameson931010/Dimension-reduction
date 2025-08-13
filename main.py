@@ -9,19 +9,19 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from model_1d import EMG128CAE
+from model import EMG128CAE
 from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
 
 # --------- Config ---------
 KFOLDS = 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation
-EPOCHS = 500
-PATIENCE = 25
-BATCH_SIZE = 10 # Should be a multiple of the number of window within a .mat file 
+EPOCHS = 800
+PATIENCE = 40
+BATCH_SIZE = 128 # Should be a multiple of the number of window within a .mat file 
 CRITERION = nn.SmoothL1Loss() # nn.L1Loss() # nn.MSELoss(), nn.SmoothL1Loss()
-LEARNING_RATE = 2e-4
-WEIGHT_DECAY = 1e-5
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 0 #1e-4
 
 NUM_POOLING = 4
 NUM_FILTER = 2
@@ -30,16 +30,17 @@ random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
-SUBJECT_LIST = [1] #[x for x in range(1, 19)]
+SUBJECT_LIST = [1] # [x for x in range(1, 19)]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_wd{WEIGHT_DECAY}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 EARLY_STOPPING = True
 NOT_ALL_KFOLD = True
 PRINT_TRAIN = True
+PLOT_METRIC = True
 # --------------------------
 
-def process_one_fold(train_idx, val_idx, test_idx, fold):
+def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
     torch.manual_seed(fold)
     model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
 
@@ -47,9 +48,10 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
-    model_state = training(model, train_loader, val_loader)
+    if train:
+        model_state = training(model, train_loader, val_loader)
+        torch.save(model_state, f"cae_fold{fold}.pth")
 
-    torch.save(model_state, f"cae_fold{fold}.pth")
     with open(f"log/{sys.argv[1]}.log", 'a') as f:
         f.write(f"Model saved for {fold} fold\n")
 
@@ -63,7 +65,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
 
 def training(model, train_loader, val_loader):
     criterion = CRITERION
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)#, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     best_val_loss = float('inf')
@@ -123,8 +125,10 @@ def evaluation(model, data_loader, name, plot=True):
     model.eval()
     with torch.no_grad():
         batch = next(iter(data_loader)).to(DEVICE)
+        code_size = model.encoder(batch)[0].numel()
+        CR = model.INPUT_TIME_DIM * model.INPUT_CHANNEL_DIM / code_size # Not considering quantization
         #CR = batch.shape[0] / model.encoder(batch).numel()
-        CR = batch.shape[0] / model.encoder(batch.squeeze(1).permute(0, 2, 1)).numel()
+        #CR = batch.shape[0] / model.encoder(batch.squeeze(1).permute(0, 2, 1)).numel()
         if plot:
             original = batch[0].squeeze().cpu().numpy()
             reconstructed = model(batch[0].unsqueeze(0)).squeeze().cpu().numpy()
@@ -144,7 +148,7 @@ def evaluation(model, data_loader, name, plot=True):
             SS = torch.sum(batch ** 2)
             # The following assum mean=0
             prdn = torch.sqrt(SE/SS).item() * 100
-            snr = 10 * torch.log10(SS/SE).item()
+            snr = 10 * torch.log(SS/SE).item()
             # qs = CR / prdn
             PRDN[cnt] = prdn
             SNR[cnt] = snr
@@ -155,7 +159,7 @@ def evaluation(model, data_loader, name, plot=True):
         dual_print(f"   PRDN: {PRDN.mean():.3f}")
         dual_print(f"   SNR: {SNR.mean():.3f}")
         #dual_print(f"   QS: {QS.mean():.3f}")
-        if plot:
+        if PLOT_METRIC:
             if len(SUBJECT_LIST) == 1:
                 plot_metric(PRDN.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"PRDN_{name}")
                 plot_metric(SNR.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SNR_{name}")
@@ -169,7 +173,7 @@ def evaluation(model, data_loader, name, plot=True):
 def check_dimension():
     model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
     x = torch.randn(1, 1, 100, 128).to(DEVICE)
-    #x = x.squeeze(1).permute(0, 2, 1)
+    x = x.squeeze(1).permute(0, 2, 1)
     print(f"shape: {x.shape}")
     for i, layer in enumerate(model.encoder):
         x = layer(x)
@@ -177,7 +181,7 @@ def check_dimension():
     for i, layer in enumerate(model.decoder):
         x = layer(x)
         print(f"shape of {i}: {x.shape}")
-    #x = x.permute(0, 2, 1).unsqueeze(1)
+    x = x.permute(0, 2, 1).unsqueeze(1)
     print(f"shape: {x.shape}")
     exit(0)
 
