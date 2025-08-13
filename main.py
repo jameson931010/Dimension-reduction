@@ -24,14 +24,14 @@ CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 0 #1e-4
 
-NUM_POOLING = 4
-NUM_FILTER = 2
+NUM_POOLING = int(sys.argv[2])
+NUM_FILTER = int(sys.argv[3])
 
 random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
-SUBJECT_LIST = [1] # [x for x in range(1, 19)]
+SUBJECT_LIST = [int(sys.argv[4])] # [x for x in range(1, 19)]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_wd{WEIGHT_DECAY}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
