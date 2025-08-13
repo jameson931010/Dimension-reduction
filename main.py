@@ -19,6 +19,7 @@ VAL_RATIO = 0.1 # 10% training data for validation
 EPOCHS = 1600
 PATIENCE = 40
 BATCH_SIZE = 10 # Should be a multiple of the number of window within a .mat file 
+BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 0 #1e-4
@@ -69,31 +70,28 @@ def training(model, train_loader, val_loader):
 
     best_val_loss = float('inf')
     best_model_state = None
-    no_improve_cnt = 0
+    no_improve_epochs = 0
 
     for epoch in range(1, EPOCHS+1):
         # Training
         model.train()
-        train_loss, train_recon, train_KL= 0.0, 0.0, 0.0
+        train_loss = 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS}, training")
 
         for batch in pbar:
             batch = batch.to(DEVICE) # batch: (BATCH_SIZE, 1 channel for convolution, 100, 128)
             optimizer.zero_grad()
             #outputs = model(batch)
-            mu, logvar = model.encode(batch)
-            code = model.reparam(mu, logvar)
-            outputs = model.decode(code)
+            outputs, mu, logvar = model(batch)
 
             #loss = criterion(outputs, batch)
-            loss, mse, kl = cal_loss(batch, outputs, mu, logvar)
+            beta = min(1.0, epoch / BETA_WARM_UP)
+            loss = cal_loss(batch, outputs, mu, logvar, beta)
             loss.backward()
             optimizer.step()
 
             train_loss += loss.item()
-            train_recon += mse.item()
-            train_KL += kl.item()
-            pbar.set_postfix(loss=loss.item(), mse=mse.item(), kl=kl.item())
+            pbar.set_postfix(loss=loss.item())
 
         # Validation
         model.eval()
@@ -102,22 +100,16 @@ def training(model, train_loader, val_loader):
             for batch in val_loader:
                 batch = batch.to(DEVICE)
                 #outputs = model(batch)
-                mu, logvar = model.encode(batch)
-                code = model.reparam(mu, logvar)
-                outputs = model.decode(code)
+                outputs, mu, logvar = model(batch)
 
                 #loss = criterion(outputs, batch)
-                loss, _, _ = cal_loss(batch, outputs, mu, logvar)
+                beta = min(1.0, epoch / BETA_WARM_UP)
+                loss = cal_loss(batch, outputs, mu, logvar, beta)
                 val_loss += loss.item()
 
         #scheduler.step(val_loss/len(val_loader))
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
-            f.write(
-                f"Epoch [{epoch}/{EPOCHS}], Train Loss: {train_loss/len(train_loader):.6f}, "
-                f"Val Loss: {val_loss/len(val_loader):.6f}, "
-                f"Recon: {train_recon/len(train_loader):.6f}, "
-                f"KLD: {train_KL/len(train_loader):.6f}\n"
-            )
+            f.write(f"Epoch [{epoch}/{EPOCHS}], Training Loss: {train_loss/len(train_loader):.6f}, Validation Loss: {val_loss/len(val_loader):.6f}\n")
 
         # Early stopping
         if EARLY_STOPPING:
@@ -141,8 +133,8 @@ def evaluation(model, data_loader, name, plot=True):
     model.eval()
     with torch.no_grad():
         batch = next(iter(data_loader)).to(DEVICE)
-        mu, logvar = model.encode(batch)
-        code = model.reparam(mu, logvar)
+        # Be careful when calling the encoder and decoder individually, which may cause memory leakage or incorrect result
+        code, mu, logvar = model.encode(batch)
 
         #code_size = model.encode(batch)[0].numel()
         code_size = code[0].numel()
@@ -152,8 +144,8 @@ def evaluation(model, data_loader, name, plot=True):
         if plot:
             #original = batch[0].squeeze().cpu().numpy()
             #reconstructed = model(batch[0].unsqueeze(0)).squeeze().cpu().numpy()
-            original = code[0].squeeze().cpu().numpy()
-            reconstructed = model.decode(code[0].unsqueeze(0)).squeeze().cpu().numpy()
+            original = batch[0].squeeze().cpu().numpy()
+            reconstructed = model(batch[0].unsqueeze(0))[0].squeeze().cpu().numpy()
             prd = 100 * np.sqrt(np.sum((original - reconstructed) ** 2) / np.sum(original ** 2))
             dual_print(f"PRD for sample: {prd:.3f}")
             plot_channel(original, reconstructed, name)
@@ -165,9 +157,7 @@ def evaluation(model, data_loader, name, plot=True):
         cnt = 0
         for batch in data_loader:
             batch = batch.to(DEVICE)  # shape: (dataset.window_num, 1, 100, 128)
-            mu, logvar = model.encode(batch)
-            code = model.reparam(mu, logvar)
-            outputs = model.decode(code)
+            recon, _, _ = model(batch)
             #recon = model(batch)
             SE = torch.sum((batch-recon) ** 2)
             SS = torch.sum(batch ** 2)
@@ -215,10 +205,10 @@ def dual_print(mes):
     with open(f"log/{NAME}.log", 'a') as f:
         f.write(str(mes) + '\n')
     
-def cal_loss(x, recon, mu, logvar):
+def cal_loss(x, recon, mu, logvar, beta):
     MSE = F.mse_loss(recon, x, reduction="mean")
     KL = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-    return MSE + KL, MSE, KL
+    return MSE + beta * KL
 
 if __name__ == '__main__':
     if len(sys.argv) <= 1:
@@ -244,7 +234,7 @@ if __name__ == '__main__':
         for subject in SUBJECT_LIST:
             for gesture in range(FIRST_N_GESTURE):
                 indeces = random.sample(rep_sample_pool, REPETITION)
-                for rep in range(REPETITION):
+                for rep in indeces:
                     idx_base = subject*dataset.subject_len + (gesture*REPETITION + rep)*dataset.window_num
                     if rep < test_bound:
                         test_idx.extend([idx_base + i for i in range(dataset.window_num)])

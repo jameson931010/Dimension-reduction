@@ -10,6 +10,7 @@ class EMG128CAE(nn.Module):
     P = 1                    # padding for K=3
     POOL_K = 2
     POOL_S = 2
+    NUM_GROUP = 8
     # bits: bits after quantization; input resolution bits = 16
 
     def __init__(self, num_pooling: int = 3, num_filter: int = 4):
@@ -27,6 +28,7 @@ class EMG128CAE(nn.Module):
             enc_blocks.append(nn.Sequential(
                 nn.Conv2d(in_ch, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
                 #nn.BatchNorm2d(self.FILTER_NUM),
+                #nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
                 nn.ReLU(inplace=True),
                 #nn.LeakyReLU(inplace=True),
                 #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
@@ -47,6 +49,7 @@ class EMG128CAE(nn.Module):
         self.from_code = nn.Sequential(
             nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.K, padding=self.P, stride=1),
             #nn.BatchNorm2d(self.FILTER_NUM),
+            #nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
             nn.ReLU(inplace=True),
             #nn.LeakyReLU(inplace=True),
         )
@@ -62,6 +65,7 @@ class EMG128CAE(nn.Module):
                 #nn.LeakyReLU(inplace=True),
                 nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
                 #nn.BatchNorm2d(self.FILTER_NUM),
+                #nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
                 nn.ReLU(inplace=True),
                 #nn.LeakyReLU(inplace=True),
             ))
@@ -85,12 +89,8 @@ class EMG128CAE(nn.Module):
         #return h
         mu = self.to_mu(h)
         logvar = self.to_logvar(h)
-        return mu, logvar
-
-    def reparam(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        std = torch.exp(0.5*logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
+        code = mu + torch.exp(0.5*logvar) * torch.randn_like(mu)
+        return code, mu, logvar
 
     def decode(self, h: torch.Tensor) -> torch.Tensor:
         h = self.from_code(h)
@@ -108,7 +108,6 @@ class EMG128CAE(nn.Module):
 
         h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]
         #code = self.encode(h)
-        mu, logvar = self.encode(h)
-        code = self.reparam(mu, logvar)
+        code, mu, logvar = self.encode(h)
         out = self.decode(code)
         return out, mu, logvar
