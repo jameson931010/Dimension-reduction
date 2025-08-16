@@ -5,111 +5,98 @@ import torch.nn.functional as F
 class EMG128CAE(nn.Module):
     INPUT_TIME_DIM = 100
     INPUT_CHANNEL_DIM = 128
-    FILTER_NUM = 16 # The number of convolution filter in intermediate layer
-    CON_KERNEL_SIZE = 3
-    CON_PADDING = int((CON_KERNEL_SIZE-1)/2)
-    POOL_KERNEL_SIZE = 2
-    POOL_STRIDE = 2
-    # Upsampling mode, try "nearest", "bilinear" or "bicubic". The latter is more time comsuming.
-    POOL_MODE = "bilinear"
+    FILTER_NUM = 64 # The number of convolution filter in intermediate layer
+    K = 3                    # conv kernel
+    P = 1                    # padding for K=3
+    POOL_K = 2
+    POOL_S = 2
     # bits: bits after quantization; input resolution bits = 16
 
-    def __init__(self, num_pooling=3, num_filter=2):
+    def __init__(self, num_pooling: int = 3, num_filter: int = 4):
         """
-        num_pooling: the number of pooling layer
-        num_filter: the number of convolution filter in the last layer
-        """
+        num_pooling: the number of pooling layer in encoder (mirrored by unpool in decoder)
+        num_filter: code depth (channels of final encoder conv)        """
         super(EMG128CAE, self).__init__()
+        assert num_pooling >= 1
+        assert num_filter >= 1
         
-        # CR = (100*128) / (6*8) / 2 = 133.3
-        self.encoder = nn.Sequential(
-            # First layer
-            nn.Conv2d(1, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING), # Zero_padded by default
-            #nn.Conv2d(1, self.FILTER_NUM//2, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING), # Zero_padded by default
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.LeakyReLU(),
-            #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.LeakyReLU(),
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE),
-            #nn.MaxPool2d(kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE),
+        # Encoder
+        enc_blocks, pools = [], []
+        in_ch = 1 # For the first layer
+        for _ in range(num_pooling):
+            enc_blocks.append(nn.Sequential(
+                nn.Conv2d(in_ch, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
+                nn.BatchNorm2d(self.FILTER_NUM),
+                nn.ReLU(inplace=True),
+                #nn.LeakyReLU(inplace=True),
+                nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
+                nn.BatchNorm2d(self.FILTER_NUM),
+                nn.ReLU(inplace=True),
+                #nn.LeakyReLU(inplace=True),
+            ))
+            pools.append(nn.MaxPool2d(kernel_size=self.POOL_K, stride=self.POOL_S, return_indices=True))
+            in_ch = self.FILTER_NUM # For remaining layer in encoder
 
-            # Intermediate layer
-            *([
-                #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                #nn.BatchNorm2d(self.FILTER_NUM),
-                #nn.LeakyReLU(),
-                nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                #nn.BatchNorm2d(self.FILTER_NUM),
-                #nn.LeakyReLU(),
-                #nn.MaxPool2d(kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
-                nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE)
-            ] * (num_pooling - 1)),
+        self.encoder_convs = nn.ModuleList(enc_blocks)
+        self.encoder_pools = nn.ModuleList(pools)
 
-            # Last convolution layer
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.LeakyReLU(),
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.LeakyReLU(),
-            nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            #nn.BatchNorm2d(num_filter),
-            #nn.LeakyReLU(),
-            #nn.Conv2d(num_filter, num_filter, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+        # Project to code
+        self.to_code = nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.K, padding=self.P)
+        self.from_code = nn.Sequential(
+            nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.K, padding=self.P, stride=1),
+            nn.BatchNorm2d(self.FILTER_NUM),
+            nn.ReLU(inplace=True),
+            #nn.LeakyReLU(inplace=True),
         )
 
-        decoder_layers = []
-
-        # First layer
-        decoder_layers.extend([
-            #nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.Conv2d(num_filter, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.LeakyReLU(),
-            #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            #nn.LeakyReLU()
-        ])
-
-        # Intermediate layer
-        power = 2 ** (num_pooling - 1)
-        for layer in range(num_pooling-1):
-            additional_padding = (int(self.INPUT_TIME_DIM//power) & 1, int(self.INPUT_CHANNEL_DIM//power) & 1) # whether downsampling have lose 1 dimension
-            decoder_layers.extend([
-                #nn.Upsample(size=(int(self.INPUT_TIME_DIM//power), int(self.INPUT_CHANNEL_DIM//power)), mode=self.POOL_MODE),
-                nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
-                #nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                #nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-                #nn.BatchNorm2d(self.FILTER_NUM),
-                #nn.LeakyReLU(),
-                nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
+        # Decoder
+        dec_blocks, unpools = [], []
+        for _ in range(num_pooling):
+            unpools.append(nn.MaxUnpool2d(kernel_size=self.POOL_K, stride=self.POOL_S))
+            dec_blocks.append(nn.Sequential(
+                nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
                 nn.BatchNorm2d(self.FILTER_NUM),
-                nn.LeakyReLU()
-            ])
-            power //= 2
+                nn.ReLU(inplace=True),
+                #nn.LeakyReLU(inplace=True),
+                nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
+                nn.BatchNorm2d(self.FILTER_NUM),
+                nn.ReLU(inplace=True),
+                #nn.LeakyReLU(inplace=True),
+            ))
+        self.decoder_unpools = nn.ModuleList(unpools)
+        self.decoder_blocks = nn.ModuleList(dec_blocks)
 
-        # Final layer
-        additional_padding = (int(self.INPUT_TIME_DIM//power) & 1, int(self.INPUT_CHANNEL_DIM//power) & 1)
-        decoder_layers.extend([
-            #nn.Upsample(size=(self.INPUT_TIME_DIM, self.INPUT_CHANNEL_DIM), mode=self.POOL_MODE),
-            nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_KERNEL_SIZE, stride=self.POOL_STRIDE, output_padding=additional_padding),
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM*2, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.BatchNorm2d(self.FILTER_NUM*2),
-            nn.LeakyReLU(),
-            nn.Conv2d(self.FILTER_NUM*2, self.FILTER_NUM*2, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.BatchNorm2d(self.FILTER_NUM*2),
-            nn.LeakyReLU(),
-            nn.Conv2d(self.FILTER_NUM*2, self.FILTER_NUM, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING),
-            nn.BatchNorm2d(self.FILTER_NUM),
-            nn.LeakyReLU(),
-            #nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
-            nn.Conv2d(self.FILTER_NUM, 1, kernel_size=self.CON_KERNEL_SIZE, padding=self.CON_PADDING)
-        ])
+        # Final reconstruction
+        self.reconstruct = nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.K, padding=self.P)
 
-        self.decoder = nn.Sequential(*decoder_layers)
+        # Buffers for exact unpool sizing
+        self._pool_indices = []
+        self._prepool_sizes = []
+
+    def encode(self, h: torch.Tensor) -> torch.Tensor:
+        for conv, pool in zip(self.encoder_convs, self.encoder_pools):
+            h = conv(h)
+            self._prepool_sizes.append(h.size())
+            h, idx = pool(h)
+            self._pool_indices.append(idx)
+        h = self.to_code(h)
+        return h
+
+    def decode(self, h: torch.Tensor) -> torch.Tensor:
+        h = self.from_code(h)
+        for i in reversed(range(len(self.decoder_blocks))):
+            h = self.decoder_unpools[i](h, self._pool_indices[i], output_size=self._prepool_sizes[i])
+            h = self.decoder_blocks[i](h)
+
+        h = self.reconstruct(h)
+        return h
+
 
     def forward(self, x):
-        x = self.encoder(x)
-        x = self.decoder(x)
-        return x
+        self._pool_indices.clear()
+        self._prepool_sizes.clear()
+
+        h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]
+        code = self.encode(h)
+        out = self.decode(code)
+        return out

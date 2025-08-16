@@ -19,6 +19,7 @@ VAL_RATIO = 0.1 # 10% training data for validation
 EPOCHS = 1600
 PATIENCE = 40
 BATCH_SIZE = 10 # Should be a multiple of the number of window within a .mat file 
+BETA = 0.5
 BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-4
@@ -51,7 +52,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
     if train:
         model_state = training(model, train_loader, val_loader)
-        torch.save(model_state, f"cae_fold{fold}.pth")
+        torch.save(model_state, f"model/cae_fold{fold}.pth")
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Model saved for {fold} fold\n")
 
@@ -85,7 +86,7 @@ def training(model, train_loader, val_loader):
             outputs, mu, logvar = model(batch)
 
             #loss = criterion(outputs, batch)
-            beta = min(1.0, epoch / BETA_WARM_UP)
+            beta = min(BETA, epoch / BETA_WARM_UP * BETA)
             loss = cal_loss(batch, outputs, mu, logvar, beta)
             loss.backward()
             optimizer.step()
