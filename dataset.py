@@ -70,8 +70,20 @@ class EMG128Dataset(Dataset):
     def __getitem__(self, idx):
         return self.samples[idx // self.subject_len][idx % self.subject_len]
 
-if __name__ == '__main__':
-    mat = scipy.io.loadmat('CapgMyo-DB-a/dba-s1/001-001-001.mat')
-    data=mat['data']
-    for i in [0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]:
-        print(f"{i}: {data[:8, i]*1000}")
+class LatentDataset(torch.utils.data.Dataset):
+    def __init__(self, origin, vae, device):
+        self.origin = origin
+        self.vae = vae
+        self.device = device
+
+    def __len__(self):
+        return len(self.origin)
+
+    def __getitem__(self, i):
+        x = self.origin[i].to(self.device)  # (1, 100, 128)
+        x = x.unsqueeze(0) # (1, 1, 100, 128)
+        with torch.no_grad():
+            self.vae._pool_indices.clear()
+            self.vae._prepool_sizes.clear()
+            code, mu, logvar = self.vae.encode(x)
+        return mu.squeeze(0)  # (num_filter, 100, 128)
