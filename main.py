@@ -9,20 +9,27 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from vcae_model import EMG128CAE
+from model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
 
 # --------- Config ---------
+PAPER_SETTING = False
+EARLY_STOPPING = True
+ALL_SUBJECT = False # inter- or intra-subject
+ALL_KFOLD = False
+PRINT_TRAIN = True
+PLOT_METRIC = False
+
 KFOLDS = 5 # KFold cross validation
-VAL_RATIO = 0.1 # 10% training data for validation
-EPOCHS = 1600
+VAL_RATIO = 0.1 # 10% training data for validation, only used for intra-subject
+EPOCHS = 20 if PAPER_SETTING else 1600
 PATIENCE = 40
-BATCH_SIZE = 10 # Should be a multiple of the number of window within a .mat file 
-BETA = 0.5
+BATCH_SIZE = 128 if PAPER_SETTING else 10
+BETA = 1
 BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 1e-3 if PAPER_SETTING else 1e-4
 WEIGHT_DECAY = 0 #1e-4
 
 NUM_POOLING = int(sys.argv[2])
@@ -32,14 +39,10 @@ random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
-SUBJECT_LIST = [int(sys.argv[4])] # [x for x in range(1, 19)]
+SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [int(sys.argv[4])]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_wd{WEIGHT_DECAY}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
-EARLY_STOPPING = True
-NOT_ALL_KFOLD = True
-PRINT_TRAIN = True
-PLOT_METRIC = False
 # --------------------------
 
 def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
@@ -55,9 +58,12 @@ def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
         torch.save(model_state, f"model/cae_fold{fold}.pth")
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Model saved for {fold} fold\n")
+    else:
+        model_state = torch.load(f"model/cae_fold{fold}.pth")
+    model.load_state_dict(model_state)
 
     # Evaluation
-    ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
+    ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=False)
     test_loader = DataLoader(Subset(dataset, test_idx), batch_size=BATCH_SIZE, shuffle=False)
     if PRINT_TRAIN:
         evaluation(model, ordered_train_loader, name=f"{NAME}_train_{fold}")
@@ -65,7 +71,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
     
 
 def training(model, train_loader, val_loader):
-    #criterion = CRITERION
+    criterion = CRITERION
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)#, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
@@ -82,12 +88,14 @@ def training(model, train_loader, val_loader):
         for batch in pbar:
             batch = batch.to(DEVICE) # batch: (BATCH_SIZE, 1 channel for convolution, 100, 128)
             optimizer.zero_grad()
-            #outputs = model(batch)
-            outputs, mu, logvar = model(batch)
+            if model.model_type == "VCAE":
+                outputs, mu, logvar = model(batch)
+                beta = min(BETA, epoch / BETA_WARM_UP * BETA)
+                loss = cal_loss(batch, outputs, mu, logvar, beta)
+            else: # CAE
+                outputs = model(batch)
+                loss = criterion(outputs, batch)
 
-            #loss = criterion(outputs, batch)
-            beta = min(BETA, epoch / BETA_WARM_UP * BETA)
-            loss = cal_loss(batch, outputs, mu, logvar, beta)
             loss.backward()
             optimizer.step()
 
@@ -100,12 +108,14 @@ def training(model, train_loader, val_loader):
         with torch.no_grad():
             for batch in val_loader:
                 batch = batch.to(DEVICE)
-                #outputs = model(batch)
-                outputs, mu, logvar = model(batch)
+                if model.model_type == "VCAE":
+                    outputs, mu, logvar = model(batch)
+                    beta = min(1.0, epoch / BETA_WARM_UP)
+                    loss = cal_loss(batch, outputs, mu, logvar, beta)
+                else: # CAE
+                    outputs = model(batch)
+                    loss = criterion(outputs, batch)
 
-                #loss = criterion(outputs, batch)
-                beta = min(1.0, epoch / BETA_WARM_UP)
-                loss = cal_loss(batch, outputs, mu, logvar, beta)
                 val_loss += loss.item()
 
         #scheduler.step(val_loss/len(val_loader))
@@ -134,19 +144,22 @@ def evaluation(model, data_loader, name, plot=True):
     model.eval()
     with torch.no_grad():
         batch = next(iter(data_loader)).to(DEVICE)
-        # Be careful when calling the encoder and decoder individually, which may cause memory leakage or incorrect result
-        code, mu, logvar = model.encode(batch)
+        if model.model_type == "VCAE":
+            # Be careful when calling the encoder and decoder individually, which may cause memory leakage or incorrect result
+            code, mu, logvar = model.encode(batch)
+            code_size = code[0].numel()
+        else: # CAE
+            code_size = model.encode(batch)[0].numel()
 
-        #code_size = model.encode(batch)[0].numel()
-        code_size = code[0].numel()
-        CR = model.INPUT_TIME_DIM * model.INPUT_CHANNEL_DIM / code_size # Not considering quantization
+        CR = INPUT_TIME_DIM * INPUT_CHANNEL_DIM / code_size # Not considering quantization
         #CR = batch.shape[0] / model.encoder(batch).numel()
         #CR = batch.shape[0] / model.encoder(batch.squeeze(1).permute(0, 2, 1)).numel()
         if plot:
-            #original = batch[0].squeeze().cpu().numpy()
-            #reconstructed = model(batch[0].unsqueeze(0)).squeeze().cpu().numpy()
             original = batch[0].squeeze().cpu().numpy()
-            reconstructed = model(batch[0].unsqueeze(0))[0].squeeze().cpu().numpy()
+            if model.model_type == "VCAE":
+                reconstructed = model(batch[0].unsqueeze(0))[0].squeeze().cpu().numpy()
+            else: # CAE
+                reconstructed = model(batch[0].unsqueeze(0)).squeeze().cpu().numpy()
             prd = 100 * np.sqrt(np.sum((original - reconstructed) ** 2) / np.sum(original ** 2))
             dual_print(f"PRD for sample: {prd:.3f}")
             plot_channel(original, reconstructed, name)
@@ -158,13 +171,15 @@ def evaluation(model, data_loader, name, plot=True):
         cnt = 0
         for batch in data_loader:
             batch = batch.to(DEVICE)  # shape: (dataset.window_num, 1, 100, 128)
-            recon, _, _ = model(batch)
-            #recon = model(batch)
+            if model.model_type == "VCAE":
+                recon, _, _ = model(batch)
+            else: # CAE
+                recon = model(batch)
             SE = torch.sum((batch-recon) ** 2)
             SS = torch.sum(batch ** 2)
             # The following assum mean=0
             prdn = torch.sqrt(SE/SS).item() * 100
-            snr = 10 * torch.log(SS/SE).item()
+            snr = 10 * (torch.log(SS/SE).item() if PAPER_SETTING else torch.log10(SS/SE).item())
             # qs = CR / prdn
             PRDN[cnt] = prdn
             SNR[cnt] = snr
@@ -217,7 +232,7 @@ if __name__ == '__main__':
         exit(1)
 
     for fold in range(1, KFOLDS+1):
-        if fold==3 and NOT_ALL_KFOLD:
+        if fold==3 and not ALL_KFOLD:
             break
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"\nFold {fold}/{KFOLDS}\n")
@@ -227,7 +242,7 @@ if __name__ == '__main__':
         train_idx = []
         # non-inclusive upperbound of index of repetition for testing and validation
         test_bound = REPETITION//KFOLDS # 2
-        val_bound = test_bound + int(REPETITION*VAL_RATIO) # 3
+        val_bound = 2 if ALL_SUBJECT else test_bound + int(REPETITION*VAL_RATIO) # 3
 
         # Sample repetition for testing
         # idx: (len(SUBJECT_LIST), FIRST_N_GESTURE * REPETITION * dataset.window_num)
@@ -237,7 +252,7 @@ if __name__ == '__main__':
                 indeces = random.sample(rep_sample_pool, REPETITION)
                 for rep in indeces:
                     idx_base = subject*dataset.subject_len + (gesture*REPETITION + rep)*dataset.window_num
-                    if rep < test_bound:
+                    if (fold == subject and ALL_SUBJECT) or (rep < test_bound and not ALL_SUBJECT):
                         test_idx.extend([idx_base + i for i in range(dataset.window_num)])
                     elif rep < val_bound:
                         val_idx.extend([idx_base + i for i in range(dataset.window_num)])
