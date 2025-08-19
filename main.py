@@ -36,6 +36,7 @@ NUM_POOLING = int(sys.argv[2])
 NUM_FILTER = int(sys.argv[3])
 
 random.seed(141)
+np.random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
@@ -55,11 +56,11 @@ def process_one_fold(train_idx, val_idx, test_idx, fold, train=True):
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
     if train:
         model_state = training(model, train_loader, val_loader)
-        torch.save(model_state, f"model/cae_fold{fold}.pth")
+        torch.save(model_state, f"model/main_fold{fold}.pth")
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Model saved for {fold} fold\n")
     else:
-        model_state = torch.load(f"model/cae_fold{fold}.pth")
+        model_state = torch.load(f"model/main_fold{fold}.pth")
     model.load_state_dict(model_state)
 
     # Evaluation
@@ -110,7 +111,7 @@ def training(model, train_loader, val_loader):
                 batch = batch.to(DEVICE)
                 if model.model_type == "VCAE":
                     outputs, mu, logvar = model(batch)
-                    beta = min(1.0, epoch / BETA_WARM_UP)
+                    beta = min(BETA, epoch / BETA_WARM_UP * BETA)
                     loss = cal_loss(batch, outputs, mu, logvar, beta)
                 else: # CAE
                     outputs = model(batch)

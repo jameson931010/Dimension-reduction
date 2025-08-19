@@ -65,7 +65,7 @@ class EMG128Dataset(Dataset):
                     self.samples[subject_index][index_base + i//window_size] = torch.tensor(window, dtype=torch.float32).unsqueeze(0) # (1, 100, 128)
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.samples) * self.subject_len
 
     def __getitem__(self, idx):
         return self.samples[idx // self.subject_len][idx % self.subject_len]
