@@ -23,16 +23,22 @@ PRINT_TRAIN = True
 PLOT_METRIC = False
 
 # --------- New Diffusion Config ---------
-TRAIN_AE = False             # False to skip AE training if you already have weights
-TRAIN_DIFFUSION = True      # Train stage-2 diffusion on latents (AE frozen)
-USE_DIFFUSION_AT_TEST = False  # Route eval through diffusion sampler
+TRAIN_AE = False
+TRAIN_DIFFUSION = True # With AE frozen
+EVAL_TRAIN = True
+EVAL_AE = True
+EVAL_QUANT = True
+EVAL_DIFFUSION = True
+USE_DIFFUSION_AT_TEST = True
+
 DIFFUSION_STEPS = 10        # DDIM steps at inference (10–20 usually fine)
-QUANT_STEP = 1.0            # Larger => stronger quantization => higher CR
+QUANT_STEP = float(sys.argv[5])            # Larger => stronger quantization => higher CR
 QUANT_CLAMP = None          # e.g., 4.0 to clamp latent range during quantization
 
 KFOLDS = 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation, only used for intra-subject
 EPOCHS = 20 if PAPER_SETTING else 1600
+EPOCHS_D = 400
 PATIENCE = 40
 BATCH_SIZE = 128 if PAPER_SETTING else 10
 BETA = 1
@@ -51,10 +57,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [int(sys.argv[4])]
 FIRST_N_GESTURE = 8
-NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_wd{WEIGHT_DECAY}_{NUM_POOLING}_{NUM_FILTER}"
+NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_qstep{QUANT_STEP}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 quantizer = UniformQuantizer(step=QUANT_STEP, clamp=QUANT_CLAMP).to(DEVICE)
-latent_diffusion = None   # lazily created after we infer code channels
 # --------------------------
 
 def process_one_fold(train_idx, val_idx, test_idx, fold):
@@ -74,30 +79,39 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
         model_state = torch.load(f"model/main_fold{fold}.pth")
     model.load_state_dict(model_state)
 
-        # --- Stage 2: Diffusion (latent) ---
-    if USE_DIFFUSION_AT_TEST and TRAIN_DIFFUSION:
-        # train using the same train_loader used for AE (we re-use variable train_loader defined earlier)
-        train_diffusion(model, train_loader, fold)
+    # Freeze model
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+    # Infer code size from one batch to create diffusion model
+    x_0 = next(iter(train_loader)).to(DEVICE)
+    with torch.no_grad():
+        z = get_code(model, x_0, deterministic_vcae=True)
+    code_channels = z.shape[1]
+    latent_diffusion = LatentDiffusion(code_channels=code_channels).to(DEVICE)
+
+    if TRAIN_DIFFUSION:
+        train_diffusion(model, latent_diffusion, train_loader, fold)
     else:
-        # lazy-load pretrained diffusion for this fold
-        model.eval()
-        tmp = next(iter(train_loader)).to(DEVICE)
-        with torch.no_grad():
-            z = get_code(model, tmp, deterministic_vcae=True)
-        code_channels = z.shape[1]
-        global latent_diffusion
-        if latent_diffusion is None:
-            latent_diffusion = LatentDiffusion(code_channels=code_channels).to(DEVICE)
         latent_diffusion.load_state_dict(torch.load(f"model/diffusion_latent_fold{fold}.pth", map_location=DEVICE))
         latent_diffusion.eval()
 
     # Evaluation
     ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=False)
     test_loader = DataLoader(Subset(dataset, test_idx), batch_size=BATCH_SIZE, shuffle=False)
-    if PRINT_TRAIN:
-        evaluation(model, ordered_train_loader, name=f"{NAME}_train_{fold}")
-    evaluation(model, test_loader, name=f"{NAME}_test_{fold}")
-    
+    if EVAL_AE:
+        if EVAL_TRAIN:
+            evaluation(model, latent_diffusion, ordered_train_loader, quantize=False, use_diffusion=False, name=f"{NAME}_ae_train_{fold}")
+        evaluation(model, latent_diffusion, test_loader, quantize=False, use_diffusion=False, name=f"{NAME}_ae_test_{fold}")
+    if EVAL_QUANT:
+        if EVAL_TRAIN:
+            evaluation(model, latent_diffusion, ordered_train_loader, quantize=True, use_diffusion=False, name=f"{NAME}_quant_train_{fold}")
+        evaluation(model, latent_diffusion, test_loader, quantize=True, use_diffusion=False, name=f"{NAME}_quant_test_{fold}")
+    if EVAL_DIFFUSION:
+        if EVAL_TRAIN:
+            evaluation(model, latent_diffusion, ordered_train_loader, quantize=True, use_diffusion=True, name=f"{NAME}_diffusion_train_{fold}")
+        evaluation(model, latent_diffusion, test_loader, quantize=True, use_diffusion=True, name=f"{NAME}_diffusion_test_{fold}")
 
 def training(model, train_loader, val_loader):
     criterion = CRITERION
@@ -168,28 +182,15 @@ def training(model, train_loader, val_loader):
     else:
         return model.state_dict()
 
-def train_diffusion(model, train_loader, fold: int):
+def train_diffusion(model, latent_diffusion, train_loader, fold: int):
     """
     Train latent diffusion conditioned on quantized latent z_q to predict noise.
     model: AE (frozen)
     train_loader: DataLoader over training windows (same as AE training)
     """
-    global latent_diffusion, quantizer
-    model.eval()
-    for p in model.parameters():
-        p.requires_grad = False
-
-    # infer channels from one batch
-    x0 = next(iter(train_loader)).to(DEVICE)
-    with torch.no_grad():
-        z0 = get_code(model, x0, deterministic_vcae=True)
-    code_channels = z0.shape[1]
-
-    if latent_diffusion is None:
-        latent_diffusion = LatentDiffusion(code_channels=code_channels).to(DEVICE)
+    global quantizer
 
     optimizer = optim.Adam(latent_diffusion.parameters(), lr=1e-4)
-    EPOCHS_D = 200  # tune this
 
     for epoch in range(1, EPOCHS_D + 1):
         latent_diffusion.train()
@@ -213,25 +214,26 @@ def train_diffusion(model, train_loader, fold: int):
 
     torch.save(latent_diffusion.state_dict(), f"model/diffusion_latent_fold{fold}.pth")
 
-def evaluation(model, data_loader, name, plot=True):
+def evaluation(model, latent_diffusion, data_loader, name, quantize: bool, use_diffusion: bool, plot=True):
     dual_print(f"Evaluating {name}")
     model.eval()
-    def _recon_with_optional_diffusion(model, x):
-        # x can be (B,1,100,128) or (1,1,100,128)
-        if USE_DIFFUSION_AT_TEST and latent_diffusion is not None:
-            with torch.no_grad():
+    def _recon_with_selected_model(model, x): # x: (?, 1, 100, 128)
+        with torch.no_grad():
+            if not quantize:
+                if model.model_type == "VCAE":
+                    return model(x)[0]
+                else: #CAE
+                    return model(x)
+            elif use_diffusion:
                 z = get_code(model, x, deterministic_vcae=True)
                 z_q = quantizer(z, hard=True)
                 z_hat = latent_diffusion.ddim_sample(z_q, steps=DIFFUSION_STEPS)
-                y = decode_from_code(model, z_hat)
-            return y
-        else:
-            # if VCAE forward returns (out, mu, logvar), pick out reconstruction
-            if model.model_type == "VCAE":
-                out, _, _ = model(x)
-                return out
+                return decode_from_code(model, z_hat)
             else:
-                return model(x)
+                z = get_code(model, x, deterministic_vcae=True)
+                z_q = quantizer(z, hard=True)
+                return decode_from_code(model, z_q)
+
     with torch.no_grad():
         batch = next(iter(data_loader)).to(DEVICE)
         if model.model_type == "VCAE":
@@ -246,11 +248,7 @@ def evaluation(model, data_loader, name, plot=True):
         #CR = batch.shape[0] / model.encoder(batch.squeeze(1).permute(0, 2, 1)).numel()
         if plot:
             original = batch[0].squeeze().cpu().numpy()
-            if model.model_type == "VCAE":
-                #reconstructed = model(batch[0].unsqueeze(0))[0].squeeze().cpu().numpy()
-                reconstructed = _recon_with_optional_diffusion(model, batch[0].unsqueeze(0)).squeeze().cpu().numpy()
-            else: # CAE
-                reconstructed = model(batch[0].unsqueeze(0)).squeeze().cpu().numpy()
+            reconstructed = _recon_with_selected_model(model, batch[0].unsqueeze(0)).squeeze().cpu().numpy()
             prd = 100 * np.sqrt(np.sum((original - reconstructed) ** 2) / np.sum(original ** 2))
             dual_print(f"PRD for sample: {prd:.3f}")
             plot_channel(original, reconstructed, name)
@@ -262,11 +260,7 @@ def evaluation(model, data_loader, name, plot=True):
         cnt = 0
         for batch in data_loader:
             batch = batch.to(DEVICE)  # shape: (dataset.window_num, 1, 100, 128)
-            if model.model_type == "VCAE":
-                recon = _recon_with_optional_diffusion(model, batch)
-                #recon, _, _ = model(batch)
-            else: # CAE
-                recon = model(batch)
+            recon = _recon_with_selected_model(model, batch)
             SE = torch.sum((batch-recon) ** 2)
             SS = torch.sum(batch ** 2)
             # The following assum mean=0

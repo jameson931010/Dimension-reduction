@@ -210,6 +210,41 @@ class LatentDiffusion(nn.Module):
 # -----------------------
 # Uniform quantizer with STE
 # -----------------------
+"""
+class Quantizer(nn.Module):
+    def __init__(self, num_bits=8, learn_range=False):
+        super().__init__()
+        self.num_bits = num_bits
+        self.levels = 2 ** num_bits
+
+        if learn_range:
+            # Learnable global scaling (safer for stability)
+            self.register_parameter("scale", nn.Parameter(torch.tensor(0.004)))
+        else:
+            self.scale = None
+
+    def forward(self, x):
+        # Use learnable global range if available, else per-batch dynamic range
+        if self.scale is not None:
+            scale = torch.abs(self.scale) + 1e-8
+        else:
+            max_val = x.detach().abs().max()
+            scale = max_val + 1e-8
+
+        # Normalize to [-1, 1]
+        x_norm = x / scale
+
+        # Quantize to discrete levels in [-1, 1]
+        x_q = torch.clamp(x_norm, -1, 1)
+        step = 2.0 / (self.levels - 1)
+        x_q = torch.round(x_q / step) * step
+
+        # Rescale back
+        x_hat = x_q * scale
+
+        return x_hat
+
+"""
 class UniformQuantizer(nn.Module):
     def __init__(self, step: float = 1.0, clamp: Optional[float] = None):
         super().__init__()
@@ -228,4 +263,4 @@ class UniformQuantizer(nn.Module):
             return z + (y - z).detach()  # STE
         else:
             return self._q(z)
-
+#"""
