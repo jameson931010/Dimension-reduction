@@ -9,10 +9,10 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from vcae_model import EMG128VCAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
+from model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
-from second_diffusion_model import LatentDiffusion, UniformQuantizer
+from second_diffusion_model import LatentDiffusion, Quantizer
 
 # --------- Config ---------
 PAPER_SETTING = False
@@ -23,7 +23,7 @@ PRINT_TRAIN = True
 PLOT_METRIC = False
 
 # --------- New Diffusion Config ---------
-TRAIN_AE = False
+TRAIN_AE = True
 TRAIN_DIFFUSION = True # With AE frozen
 EVAL_TRAIN = True
 EVAL_AE = True
@@ -31,21 +31,23 @@ EVAL_QUANT = True
 EVAL_DIFFUSION = True
 USE_DIFFUSION_AT_TEST = True
 
-DIFFUSION_STEPS = 10        # DDIM steps at inference (10–20 usually fine)
-QUANT_STEP = float(sys.argv[5])            # Larger => stronger quantization => higher CR
+DIFFUSION_STEPS = 20        # DDIM steps at inference (10–20 usually fine)
+#QUANT_STEP = float(sys.argv[5])            # Larger => stronger quantization => higher CR
+QUANT_BIT = 8
 QUANT_CLAMP = None          # e.g., 4.0 to clamp latent range during quantization
 
 KFOLDS = 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation, only used for intra-subject
 EPOCHS = 20 if PAPER_SETTING else 1600
-EPOCHS_D = 400
+EPOCHS_D = 600
 PATIENCE = 40
 BATCH_SIZE = 128 if PAPER_SETTING else 10
 BETA = 1
 BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
-LEARNING_RATE = 1e-3 if PAPER_SETTING else 1e-4
-WEIGHT_DECAY = 0 #1e-4
+LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4
+LEARNING_RATE_D = 2e-4
+WEIGHT_DECAY = 1e-5
 
 NUM_POOLING = int(sys.argv[2])
 NUM_FILTER = int(sys.argv[3])
@@ -57,14 +59,15 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [int(sys.argv[4])]
 FIRST_N_GESTURE = 8
-NAME = f"{sys.argv[1]}_e{EPOCHS}-{PATIENCE}_b{BATCH_SIZE}_lr{LEARNING_RATE}_qstep{QUANT_STEP}_{NUM_POOLING}_{NUM_FILTER}"
+NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}-{LEARNING_RATE_D}_dstep{DIFFUSION_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
-quantizer = UniformQuantizer(step=QUANT_STEP, clamp=QUANT_CLAMP).to(DEVICE)
+#quantizer = UniformQuantizer(step=QUANT_STEP, clamp=QUANT_CLAMP).to(DEVICE)
+quantizer = Quantizer(num_bits=QUANT_BIT, learn_range=True)
 # --------------------------
 
 def process_one_fold(train_idx, val_idx, test_idx, fold):
     torch.manual_seed(fold)
-    model = EMG128VCAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
+    model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
 
     # Training
     dual_print(f"Fold:{fold} training")
@@ -115,7 +118,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
 
 def training(model, train_loader, val_loader):
     criterion = CRITERION
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)#, weight_decay=WEIGHT_DECAY)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     best_val_loss = float('inf')
@@ -190,7 +193,7 @@ def train_diffusion(model, latent_diffusion, train_loader, fold: int):
     """
     global quantizer
 
-    optimizer = optim.Adam(latent_diffusion.parameters(), lr=1e-4)
+    optimizer = optim.Adam(latent_diffusion.parameters(), lr=LEARNING_RATE_D, weight_decay=WEIGHT_DECAY)
 
     for epoch in range(1, EPOCHS_D + 1):
         latent_diffusion.train()
@@ -200,7 +203,7 @@ def train_diffusion(model, latent_diffusion, train_loader, fold: int):
             x = batch.to(DEVICE)
             with torch.no_grad():
                 z_clean = get_code(model, x, deterministic_vcae=True)  # target
-                z_q = quantizer(z_clean.detach(), hard=True)          # condition (hard quant)
+                z_q = quantizer(z_clean.detach())#, hard=True)          # condition (hard quant)
             B = z_clean.shape[0]
             t = torch.randint(0, latent_diffusion.T, (B,), device=DEVICE, dtype=torch.long)
             loss = latent_diffusion.p_losses(z_clean, z_q, t)
@@ -210,7 +213,8 @@ def train_diffusion(model, latent_diffusion, train_loader, fold: int):
             optimizer.step()
             running += loss.item()
             pbar.set_postfix(loss=loss.item())
-        dual_print(f"[Diffusion] Epoch {epoch} loss: {running/len(train_loader):.6f}")
+        with open(f"log/{sys.argv[1]}.log", 'a') as f:
+            f.write(f"[Diffusion] Epoch {epoch} loss: {running/len(train_loader):.6f}\n")
 
     torch.save(latent_diffusion.state_dict(), f"model/diffusion_latent_fold{fold}.pth")
 
@@ -226,12 +230,12 @@ def evaluation(model, latent_diffusion, data_loader, name, quantize: bool, use_d
                     return model(x)
             elif use_diffusion:
                 z = get_code(model, x, deterministic_vcae=True)
-                z_q = quantizer(z, hard=True)
+                z_q = quantizer(z)#, hard=True)
                 z_hat = latent_diffusion.ddim_sample(z_q, steps=DIFFUSION_STEPS)
                 return decode_from_code(model, z_hat)
             else:
                 z = get_code(model, x, deterministic_vcae=True)
-                z_q = quantizer(z, hard=True)
+                z_q = quantizer(z)#, hard=True)
                 return decode_from_code(model, z_q)
 
     with torch.no_grad():
@@ -319,8 +323,6 @@ def get_code(model, x, deterministic_vcae: bool = True):
     """
     model.eval()
     with torch.no_grad():
-        model._pool_indices.clear()
-        model._prepool_sizes.clear()
         if model.model_type == "VCAE":
             code, mu, logvar = model.encode(x)
             return mu if deterministic_vcae else code

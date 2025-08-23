@@ -210,7 +210,7 @@ class LatentDiffusion(nn.Module):
 # -----------------------
 # Uniform quantizer with STE
 # -----------------------
-"""
+#"""
 class Quantizer(nn.Module):
     def __init__(self, num_bits=8, learn_range=False):
         super().__init__()
@@ -263,4 +263,4 @@ class UniformQuantizer(nn.Module):
             return z + (y - z).detach()  # STE
         else:
             return self._q(z)
-#"""
+"""
