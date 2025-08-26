@@ -5,14 +5,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# -----------------------
-# Time embedding utils
-# -----------------------
 def sinusoidal_time_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor:
-    device = timesteps.device
     half = dim // 2
     freqs = torch.exp(
-        torch.arange(half, device=device, dtype=torch.float32) * -(math.log(10000.0) / max(1, half))
+        torch.arange(half, device=timesteps.device, dtype=torch.float32) * -(math.log(10000.0) / max(1, half))
     )
     args = timesteps.float()[:, None] * freqs[None, :]
     emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)
@@ -32,9 +28,6 @@ class TimestepEmbedding(nn.Module):
         x = self.act(self.fc2(x))
         return x
 
-# -----------------------
-# ResBlock (unchanged)
-# -----------------------
 class ResBlock(nn.Module):
     def __init__(self, c: int, tdim: int):
         super().__init__()
@@ -45,17 +38,20 @@ class ResBlock(nn.Module):
         self.conv2 = nn.Conv2d(c, c, 3, padding=1)
         self.emb = nn.Linear(tdim, c)
         self.act = nn.SiLU()
+        self.attn = nn.MultiheadAttention(embed_dim=c, num_heads=4)
     def forward(self, x, t_emb):
         h = self.conv1(self.act(self.norm1(x)))
         h = h + self.emb(t_emb)[:, :, None, None]
         h = self.conv2(self.act(self.norm2(h)))
+        """
+        b, c, h, w = x.shape
+        x_flat = x.view(b, c, h*w).permute(2, 0, 1)  # (HW, B, C)
+        x_flat = self.attn(x_flat, x_flat, x_flat)[0]
+        x = x_flat.permute(1, 2, 0).view(b, c, h, w)
+        x = nn.Dropout(p=0.1)(x)
+        """
         return x + h
 
-# -----------------------
-# Robust Down / Up blocks
-# - Down returns (out, pre_shape)
-# - Up takes a target output_size and uses interpolate(output_size) to restore exact size
-# -----------------------
 class Down(nn.Module):
     def __init__(self, cin, cout, tdim):
         """
@@ -104,9 +100,6 @@ class Up(nn.Module):
         x = self.block2(x, t)
         return x
 
-# -----------------------
-# LatentUNet (uses robust Down/Up)
-# -----------------------
 class LatentUNet(nn.Module):
     def __init__(self, code_channels: int, base: int = 64, t_embed_dim: int = 256):
         super().__init__()
@@ -149,14 +142,17 @@ class LatentUNet(nn.Module):
         x = self.out_conv(x)
         return x
 
-# -----------------------
-# Diffusion core (buffers + DDIM)
-# -----------------------
 class LatentDiffusion(nn.Module):
-    def __init__(self, code_channels: int, T: int = 1000):
+    def __init__(self, code_channels: int, T: int = 1500, s: float = 0.008):
         super().__init__()
-        # register schedules as buffers so they move with the module to the device
-        betas = torch.linspace(1e-4, 0.02, T, dtype=torch.float32)
+        #betas = torch.linspace(1e-4, 0.02, T, dtype=torch.float32)
+        #betas = torch.clip((torch.cos(torch.linspace(0, 1, T+1) * math.pi / 2 + s) / (1 + s)) ** 2, min=1e-5, max=0.999)
+        steps = torch.arange(T + 1, dtype=torch.float32) / T
+        alpha_bar = torch.cos((steps + s) / (1 + s) * math.pi / 2) ** 2
+        alpha_bar = alpha_bar / alpha_bar[0]
+        betas = 1 - alpha_bar[1:] / alpha_bar[:-1]
+        betas = torch.clip(betas, 0.0001, 0.9999)
+
         alphas = 1.0 - betas
         alpha_bars = torch.cumprod(alphas, dim=0)
         self.register_buffer('betas', betas)
@@ -165,19 +161,27 @@ class LatentDiffusion(nn.Module):
         self.T = T
         self.unet = LatentUNet(code_channels=code_channels)
 
-    def q_sample(self, z0, t, noise):
+    def q_sample(self, z0, t, noise): # Forward
         # t is a (B,) tensor of indices
         a_bar = self.alpha_bars[t].to(z0.device).view(-1, 1, 1, 1)
         return (a_bar.sqrt() * z0) + ((1 - a_bar).sqrt() * noise)
 
-    def p_losses(self, z0, z_q, t):
+    def p_losses(self, z0, z_q, t): # Training
         noise = torch.randn_like(z0)
         z_t = self.q_sample(z0, t, noise)
-        noise_pred = self.unet(z_t, z_q, t)
-        return F.mse_loss(noise_pred, noise)
+        #noise_pred = self.unet(z_t, z_q, t)
+        #"""
+        v_pred = self.unet(z_t, z_q, t) # v = sqrt(alpha)*noise - sqrt(1-alpha)*z0
+
+        alpha_bar = self.alpha_bars[t].view(-1, 1, 1, 1)
+        v_target = (alpha_bar.sqrt() * noise) - ((1-alpha_bar).sqrt() * z0)
+
+        return F.mse_loss(v_pred, v_target)
+        #"""
+        #return F.mse_loss(noise_pred, noise)
 
     @torch.no_grad()
-    def ddim_sample(self, z_q, steps: int = 10, eta: float = 0.0):
+    def ddim_sample(self, z_q, steps: int = 50, eta: float = 0.5):#0.0):
         """
         DDIM sampling conditioned on z_q. Returns a denoised latent z_hat.
         Works with arbitrary spatial sizes because Up uses stored output_size.
@@ -189,24 +193,49 @@ class LatentDiffusion(nn.Module):
             t = step_indices[i].item()
             t_prev = step_indices[i + 1].item()
             t_batch = torch.full((z_q.shape[0],), t, device=z_q.device, dtype=torch.long)
-            a_bar_t = self.alpha_bars[t].to(z_q.device)
-            a_bar_prev = self.alpha_bars[t_prev].to(z_q.device)
+            alpha_bar_t = self.alpha_bars[t].to(z_q.device)
+            alpha_bar_prev = self.alpha_bars[t_prev].to(z_q.device)
+
+            #"""
+            v_pred = self.unet(x, z_q, t_batch)
+            noise_pred = (alpha_bar_t.sqrt()*v_pred + (1-alpha_bar_t).sqrt()*x)# / (1 - alpha_bar_t + 1e-8)
+            x0 = (x - (1-alpha_bar_t).sqrt() * noise_pred) / (alpha_bar_t.sqrt() + 1e-8)
+            # DDIM update (using derived noise_pred)
+            sigma = eta * ((1-alpha_bar_prev)/(1-alpha_bar_t+1e-8) * (1 - alpha_bar_t/alpha_bar_prev) + 1e-8).sqrt()
+            dir_coeff = (1 - alpha_bar_prev - sigma**2).clamp(min=0.0).sqrt()
+            rand_noise = torch.randn_like(x) if sigma > 0 else torch.zeros_like(x)
+            x = alpha_bar_prev.sqrt() * x0 + dir_coeff * noise_pred + sigma * rand_noise
+
+            #dir_xt = (1 - alpha_bar_prev - eta**2 * (1 - alpha_bar_prev) / (1 - alpha_bar_t + 1e-8)).sqrt() * noise_pred
+            #noise = torch.randn_like(x) if eta > 0 else torch.zeros_like(x)
+            #x = alpha_bar_prev.sqrt() * x0 + dir_xt + eta * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar_t + 1e-8)) * noise
+            """
+
             eps = self.unet(x, z_q, t_batch)
-            x0 = (x - (1 - a_bar_t).sqrt() * eps) / a_bar_t.sqrt()
-            num = (1 - a_bar_prev) / (1 - a_bar_t)
+            x0 = (x - (1 - alpha_bar_t).sqrt() * eps) / alpha_bar_t.sqrt()
+            num = (1 - alpha_bar_prev) / (1 - alpha_bar_t)
             # sigma scalar for this step (DDIM)
-            sigma = float(eta * torch.sqrt(num * (1 - (a_bar_t / a_bar_prev))).item())
+            sigma = float(eta * torch.sqrt(num * (1 - (alpha_bar_t / alpha_bar_prev))).item())
             noise = torch.randn_like(x) if sigma > 0 else 0.0
-            x = a_bar_prev.sqrt() * x0 + (1 - a_bar_prev).sqrt() * eps
+            x = alpha_bar_prev.sqrt() * x0 + (1 - alpha_bar_prev).sqrt() * eps
             if sigma > 0:
                 x = x + sigma * noise
         # final step to t=0
         t0 = torch.zeros((z_q.shape[0],), device=z_q.device, dtype=torch.long)
         eps0 = self.unet(x, z_q, t0)
-        a_bar0 = self.alpha_bars[0].to(z_q.device)
-        x0 = (x - (1 - a_bar0).sqrt() * eps0) / a_bar0.sqrt()
+        alpha_bar0 = self.alpha_bars[0]#.to(z_q.device)
+        x0 = (x - (1 - alpha_bar0).sqrt() * eps0) / alpha_bar0.sqrt()
+            """
+        # final step to t=0
+        t0 = torch.zeros((z_q.shape[0],), device=z_q.device, dtype=torch.long)
+        v_pred = self.unet(x, z_q, t0)
+        alpha_bar_0 = self.alpha_bars[0]
+        #noise_pred = (alpha_bar_0.sqrt() * v_pred + (1-alpha_bar_0).sqrt() * x) / (1 - alpha_bar_0 + 1e-8)
+        noise_pred = alpha_bar_0.sqrt() * v_pred + (1-alpha_bar_0).sqrt() * x
+        x0 = (x - (1-alpha_bar_0).sqrt() * noise_pred) / (alpha_bar_0.sqrt() + 1e-8)
+        #"""
         return x0
-
+        
 # -----------------------
 # Uniform quantizer with STE
 # -----------------------
@@ -264,3 +293,37 @@ class UniformQuantizer(nn.Module):
         else:
             return self._q(z)
 """
+
+class EMA:
+    def __init__(self, model: nn.Module, decay: float = 0.999):
+        """
+        EMA for model parameters.
+        - model: The model to apply EMA to (e.g., unet).
+        - decay: EMA decay rate (0.999 is common for diffusion; higher = slower update).
+        """
+        super().__init__()
+        self.decay = decay
+        self.shadow_params = [p.clone().detach() for p in model.parameters() if p.requires_grad]
+        self.model = model  # Reference for swapping
+
+    def update(self):
+        """Update shadow params with EMA of current params."""
+        with torch.no_grad():
+            for shadow_param, param in zip(self.shadow_params, self.model.parameters()):
+                if param.requires_grad:
+                    shadow_param.data = self.decay * shadow_param.data + (1 - self.decay) * param.data
+
+    def copy_to_model(self):
+        """Copy shadow params to the model for inference."""
+        with torch.no_grad():
+            for shadow_param, param in zip(self.shadow_params, self.model.parameters()):
+                if param.requires_grad:
+                    param.data.copy_(shadow_param.data)
+
+    def copy_from_model(self):
+        """Restore original params after inference."""
+        with torch.no_grad():
+            for shadow_param, param in zip(self.shadow_params, self.model.parameters()):
+                if param.requires_grad:
+                    param.data.copy_(shadow_param.data)
+                    shadow_param.data.copy_(param.data)  # Reset shadow to current

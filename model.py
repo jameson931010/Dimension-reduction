@@ -6,12 +6,13 @@ INPUT_TIME_DIM = 100
 INPUT_CHANNEL_DIM = 128
 class EMG128CAE(nn.Module):
     model_type = "CAE"
-    FILTER_NUM = 16 # The number of convolution filter in intermediate layer
+    FILTER_NUM = 48 # The number of convolution filter in intermediate layer
     K = 3                    # conv kernel
     P = 1                    # padding for K=3
     POOL_K = 2
     POOL_S = 2
-    NUM_GROUP = 8
+    NUM_GROUP = 4
+    DROP_OUT_RATE = 0.1
     # bits: bits after quantization; input resolution bits = 16
 
     def __init__(self, num_pooling: int = 3, num_filter: int = 4, num_conv: int = 2):
@@ -36,8 +37,8 @@ class EMG128CAE(nn.Module):
                 #nn.BatchNorm2d(self.FILTER_NUM*power),
                 #nn.BatchNorm2d(self.FILTER_NUM),
                 nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-                nn.ReLU(inplace=True),
-                #nn.LeakyReLU(inplace=True),
+                #nn.ReLU(inplace=True),
+                nn.LeakyReLU(inplace=True),
             ]
             for _ in range(num_conv-1):
                 network.extend([
@@ -46,8 +47,8 @@ class EMG128CAE(nn.Module):
                     #nn.BatchNorm2d(self.FILTER_NUM * power*2),
                     #nn.BatchNorm2d(self.FILTER_NUM),
                     nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-                    nn.ReLU(inplace=True),
-                    #nn.LeakyReLU(inplace=True),
+                    #nn.ReLU(inplace=True),
+                    nn.LeakyReLU(inplace=True),
                 ])
             enc_blocks.append(nn.Sequential(*network))
             #power *= 2
@@ -69,22 +70,22 @@ class EMG128CAE(nn.Module):
             #nn.BatchNorm2d(self.FILTER_NUM*power),
             #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            nn.ReLU(inplace=True),
-            #nn.LeakyReLU(inplace=True),
+            #nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             #nn.Conv2d(self.FILTER_NUM*power, self.FILTER_NUM*power, kernel_size=self.K, padding=self.P),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
             #nn.BatchNorm2d(self.FILTER_NUM*power),
             #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            nn.ReLU(inplace=True),
-            #nn.LeakyReLU(inplace=True),
+            #nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             #nn.Conv2d(self.FILTER_NUM*power, self.FILTER_NUM*power, kernel_size=self.K, padding=self.P),
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
             #nn.BatchNorm2d(self.FILTER_NUM*power),
             #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            nn.ReLU(inplace=True),
-            #nn.LeakyReLU(inplace=True),
+            #nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
 
             #nn.Conv2d(self.FILTER_NUM*power, num_filter, kernel_size=self.K, padding=self.P),
             nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.K, padding=self.P),
@@ -95,8 +96,8 @@ class EMG128CAE(nn.Module):
             #nn.BatchNorm2d(self.FILTER_NUM*power),
             #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            nn.ReLU(inplace=True),
-            #nn.LeakyReLU(inplace=True),
+            #nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
         )
 
         # Decoder
@@ -113,8 +114,8 @@ class EMG128CAE(nn.Module):
                     #nn.BatchNorm2d(self.FILTER_NUM*power//pow(2, j)),
                     #nn.BatchNorm2d(self.FILTER_NUM),
                     nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-                    nn.ReLU(inplace=True),
-                    #nn.LeakyReLU(inplace=True),
+                    #nn.ReLU(inplace=True),
+                    nn.LeakyReLU(inplace=True),
                 ])
             dec_blocks.append(nn.Sequential(*network))
             #power //= 2
@@ -126,13 +127,8 @@ class EMG128CAE(nn.Module):
             nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
             #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            nn.ReLU(inplace=True),
-            #nn.LeakyReLU(inplace=True),
-            nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            nn.ReLU(inplace=True),
-            #nn.LeakyReLU(inplace=True),
+            #nn.ReLU(inplace=True),
+            nn.LeakyReLU(inplace=True),
             nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.K, padding=self.P),
         )
 
