@@ -9,10 +9,10 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
+from forth_model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
-from second_diffusion_model import LatentDiffusion, Quantizer, EMA
+from diffusion_decoder import LatentDiffusion, Quantizer, EMA
 
 # --------- Config ---------
 PAPER_SETTING = False
@@ -72,11 +72,11 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
     if TRAIN_AE:
         model_state = training(model, train_loader, val_loader)
-        torch.save(model_state, f"model/main_fold{fold}.pth")
+        torch.save(model_state, f"model/forth_fold{fold}.pth")
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Model saved for {fold} fold\n")
     else:
-        model_state = torch.load(f"model/main_fold{fold}.pth")
+        model_state = torch.load(f"model/forth_fold{fold}.pth")
     model.load_state_dict(model_state)
 
     # Freeze model
@@ -86,14 +86,14 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
 
     # Infer code size from one batch to create diffusion model
     x_0 = next(iter(train_loader)).to(DEVICE)
-    latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_EMB_DIM).to(DEVICE)
+    latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, cond_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_EMB_DIM).to(DEVICE)
     ema = EMA(latent_diffusion.unet, decay=0.99)
 
     if TRAIN_DIFFUSION:
         model_state = train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold)
-        torch.save(model_state, f"model/diffusion_latent_fold{fold}.pth")
+        torch.save(model_state, f"model/forth_diffusion_fold{fold}.pth")
     else:
-        model_state = torch.load(f"model/diffusion_latent_fold{fold}.pth")
+        model_state = torch.load(f"model/forth_diffusion_fold{fold}.pth")
     latent_diffusion.load_state_dict(model_state['unet'])
     ema.shadow_params = [p for p in model_state['ema_shadow']]
     quantizer.load_state_dict(model_state['quantizer'])
@@ -118,7 +118,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
 def training(model, train_loader, val_loader):
     criterion = CRITERION
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.95, patience=15)
 
     best_val_loss = float('inf')
     best_model_state = None
@@ -202,11 +202,12 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
         for batch in pbar:
             x = batch.to(DEVICE)
             with torch.no_grad():
-                z_clean = get_code(model, x)
+                z_q = get_code(model, x)
                 if QUANT_BIT > 0:
-                    z_q = quantizer(z_clean.detach())
+                    z_q = quantizer(z_q.detach())#, hard=True)          # condition (hard quant)
             t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-            loss = latent_diffusion.p_losses(z_clean, z_q, t)
+            #loss = latent_diffusion.p_losses(z_clean, z_q, t)
+            loss = latent_diffusion.p_losses(x, z_q, t)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(latent_diffusion.parameters(), 1.0)
@@ -223,11 +224,11 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
             ema.copy_to_model()
             for batch in val_loader:
                 batch = batch.to(DEVICE)
-                z_clean = get_code(model, x)
+                z_q = get_code(model, x)
                 if QUANT_BIT > 0:
-                    z_q = quantizer(z_clean.detach())
+                    z_q = quantizer(z_q.detach())#, hard=True)          # condition (hard quant)
                 t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-                val_loss += latent_diffusion.p_losses(z_clean, z_q, t).item()
+                val_loss += latent_diffusion.p_losses(x, z_q, t).item()
             ema.restore_model()
 
         scheduler.step(val_loss/len(val_loader))
@@ -254,6 +255,7 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
     if EARLY_STOPPING:
         return best_model_state
     else:
+        #return model.state_dict()
         return {
             'unet': latent_diffusion.state_dict(),
             'ema_shadow': ema.shadow_params,
@@ -272,15 +274,16 @@ def evaluation(model, latent_diffusion, ema, data_loader, name, quantize: bool, 
                     return model(x)
             elif use_diffusion:
                 latent_diffusion.eval()
-                z_clean = get_code(model, x)
+                z_q = get_code(model, x)
                 if QUANT_BIT > 0:
-                    z_q = quantizer(z_clean)
+                    z_q = quantizer(z_q)
                 ema.copy_to_model()
-                z_hat = latent_diffusion.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS)
+                z_hat = latent_diffusion.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
                 ema.restore_model()
-                return decode_from_code(model, z_hat)
+                #return decode_from_code(model, z_hat)
+                return z_hat
             else:
-                z = get_code(model, x, deterministic_vcae=True)
+                z = get_code(model, x)
                 z_q = quantizer(z)
                 return decode_from_code(model, z_q)
 

@@ -1,4 +1,3 @@
-# latent_diffusion.py
 import math
 from typing import Optional
 import torch
@@ -100,40 +99,75 @@ class Up(nn.Module):
         x = self.block2(x, t)
         return x
 
+class CrossAttention(nn.Module):
+    def __init__(self, query_dim: int, cond_dim: int, num_heads: int = 4):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(embed_dim=query_dim, num_heads=num_heads, batch_first=True)
+        self.proj_cond = nn.Linear(cond_dim, query_dim)  # Project cond to match query dim if needed
+
+    def forward(self, query, cond):
+        b, c_q, h_q, w_q = query.shape
+        query_flat = query.flatten(2).permute(0, 2, 1)
+
+        # cond: (B, C_cond, H_cond, W_cond) -> flatten to (H_cond*W_cond, B, C_q)
+        b, c_cond, h_cond, w_cond = cond.shape
+        cond_flat = cond.flatten(2).permute(0, 2, 1)  # (H_cond*W_cond, B, C_cond)
+        cond_flat = self.proj_cond(cond_flat)  # Project to C_q
+
+        # Cross-attn: query from noisy signal, key/value from cond (latent)
+        attended = self.attn(query_flat, cond_flat, cond_flat)[0]
+        attended = attended.permute(0, 2, 1).view(b, c_q, h_q, w_q)
+        return attended
+
 class LatentUNet(nn.Module):
-    def __init__(self, code_channels: int, base: int, time_dim: int):
+    def __init__(self, code_channels: int, cond_channels: int, base: int, time_dim: int):
         super().__init__()
         t_embed_dim = base * 4
         self.t_embed = TimestepEmbedding(time_dim, t_embed_dim)
-        cin = code_channels * 2  # will concat noisy z_t and quantized z_q
-        self.in_conv = nn.Conv2d(cin, base, 3, padding=1)
+        self.in_conv = nn.Conv2d(code_channels + cond_channels, base, 3, padding=1)
 
-        # depth = 2 (can be tuned). Use Down/Up pairs that store shapes.
+        # Cross-attn layers for conditioning (add at multiple levels)
+        self.cross_attn1 = CrossAttention(base, cond_channels)
+        self.cross_attn2 = CrossAttention(base * 2, cond_channels)
+        self.cross_attn_mid = CrossAttention(base * 4, cond_channels)
+
+        # Upsample cond latent to roughly match signal spatial dims (optional helper for attn)
+        self.cond_upsample = nn.Sequential(
+            nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1)
+        )
+
         self.d1 = Down(base, base * 2, t_embed_dim)
         self.d2 = Down(base * 2, base * 4, t_embed_dim)
-
         self.mid = ResBlock(base * 4, t_embed_dim)
-
         self.u2 = Up(base * 4, base * 2, t_embed_dim)
         self.u1 = Up(base * 2, base, t_embed_dim)
-
         self.out_conv = nn.Conv2d(base, code_channels, 3, padding=1)
         self.act = nn.SiLU()
 
-    def forward(self, z_t, z_q, t_int):
+    def forward(self, x_t, z_q, t_int):
         """
         z_t, z_q: (B, C, H, W) where C = code_channels
         t_int: (B,) integer timesteps
         returns predicted noise eps (same shape as z_t)
         """
         t_emb = self.t_embed(t_int)
-        x = torch.cat([z_t, z_q], dim=1)
-        x = self.act(self.in_conv(x))
 
-        # Down path: record shapes
-        x, s1 = self.d1(x, t_emb)   # s1 = (H1, W1)
-        x, s2 = self.d2(x, t_emb)   # s2 = (H2, W2)
+        # Upsample z_q to closer spatial match (helps attn)
+        #z_upsampled = self.cond_upsample(z_q)  # Now ~ (B,4,96,128) or similar; pad/crop if needed
+        #z_upsampled = z_q
+        z_upsampled = F.interpolate(z_q, size=x_t.shape[2:], mode='bilinear')
+        x_cat = torch.cat([x_t, z_upsampled], dim=1)
+        x = self.act(self.in_conv(x_cat))
 
+        # Down path with cross-attn
+        #x = x + self.cross_attn1(x, z_upsampled)  # Add conditioned features
+        x, s1 = self.d1(x, t_emb)
+        #x = x + self.cross_attn2(x, z_upsampled)  # Downsampled z could be added, but reuse upsampled for simplicity
+        x, s2 = self.d2(x, t_emb)
+
+        x = x + self.cross_attn_mid(x, z_upsampled)
         x = self.mid(x, t_emb)
 
         # Up path: use recorded shapes in reverse
@@ -144,7 +178,7 @@ class LatentUNet(nn.Module):
         return x
 
 class LatentDiffusion(nn.Module):
-    def __init__(self, code_channels: int = 1, num_filter: int = 256, T: int = 1500, time_dim: int = 128, s: float = 0.008):
+    def __init__(self, code_channels: int, cond_channels: int = 1, num_filter: int = 256, T: int = 1000, time_dim: int = 128, s: float = 0.008):
         super().__init__()
         #betas = torch.linspace(1e-4, 0.02, T, dtype=torch.float32)
         #betas = torch.clip((torch.cos(torch.linspace(0, 1, T+1) * math.pi / 2 + s) / (1 + s)) ** 2, min=1e-5, max=0.999)
@@ -160,7 +194,7 @@ class LatentDiffusion(nn.Module):
         self.register_buffer('alphas', alphas)
         self.register_buffer('alpha_bars', alpha_bars)
         self.T = T
-        self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim)
+        self.unet = LatentUNet(code_channels=code_channels, cond_channels=cond_channels, base=num_filter, time_dim=time_dim)
 
     def q_sample(self, z0, t, noise): # Forward
         # t is a (B,) tensor of indices
@@ -182,14 +216,15 @@ class LatentDiffusion(nn.Module):
         #return F.mse_loss(noise_pred, noise)
 
     @torch.no_grad()
-    def ddim_sample(self, z_q, steps: int = 50, eta: float = 0.5):#0.0):
+    def ddim_sample(self, z_q, steps: int = 50, eta: float = 0.5, signal_shape=(100, 128)):#0.0):
         """
         DDIM sampling conditioned on z_q. Returns a denoised latent z_hat.
         Works with arbitrary spatial sizes because Up uses stored output_size.
         """
         T = self.T
         step_indices = torch.linspace(0, T - 1, steps, device=z_q.device).long().flip(0)
-        x = torch.randn_like(z_q)
+        #x = torch.randn_like(z_q)
+        x = torch.randn(z_q.shape[0], 1, signal_shape[0], signal_shape[1], device=z_q.device)
         for i in range(len(step_indices) - 1):
             t = step_indices[i].item()
             t_prev = step_indices[i + 1].item()
@@ -297,11 +332,16 @@ class UniformQuantizer(nn.Module):
 
 class EMA:
     def __init__(self, model: nn.Module, decay: float = 0.999):
+        """
+        EMA for model parameters.
+        - model: The model to apply EMA to (e.g., unet).
+        - decay: EMA decay rate (0.999 is common for diffusion; higher = slower update).
+        """
         super().__init__()
         self.decay = decay
-        self.shadow_params = [p.clone().detach() for p in model.parameters()]
         self.temp_params = [p.clone().detach() for p in model.parameters()]
-        self.model = model # the model in reference
+        self.shadow_params = [p.clone().detach() for p in model.parameters()]
+        self.model = model  # Reference for swapping
 
     def update(self):
         with torch.no_grad():
