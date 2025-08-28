@@ -71,19 +71,33 @@ class EMG128Dataset(Dataset):
         return self.samples[idx // self.subject_len][idx % self.subject_len]
 
 class LatentDataset(torch.utils.data.Dataset):
-    def __init__(self, origin, vae, device):
-        self.origin = origin
-        self.vae = vae
-        self.device = device
+    def __init__(self, model, dataset, device, quantizer=None, subject_list=list(range(1, 19)), subject_len=800):
+        self.subject_len = subject_len
+        self.model = model
+        self.samples = {i:[None for j in range(subject_len)] for i in subject_list} # (18, 800)
+        self.origin = dataset
+
+        self.model.eval()
+        with torch.no_grad():
+            for sub in subject_list:
+                base = sub * subject_len
+                for idx in range(subject_len):
+                    x = dataset[base + idx].to(device)
+                    code = self._get_code(x)
+                    if quantizer:
+                        z_q = quantizer(code.detach())
+                    self.samples[sub][idx] = [code, z_q]
 
     def __len__(self):
-        return len(self.origin)
+        return len(self.samples) * self.subject_len
 
-    def __getitem__(self, i):
-        x = self.origin[i].to(self.device)  # (1, 100, 128)
-        x = x.unsqueeze(0) # (1, 1, 100, 128)
-        with torch.no_grad():
-            self.vae._pool_indices.clear()
-            self.vae._prepool_sizes.clear()
-            code, mu, logvar = self.vae.encode(x)
-        return mu.squeeze(0)  # (num_filter, 100, 128)
+    def __getitem__(self, idx):
+        code, z_q = self.samples[idx // self.subject_len][idx % self.subject_len]
+        return code, z_q, self.origin[idx]
+
+    def _get_code(self, x, deterministic_vcae: bool = True):
+        if self.model.model_type == "VCAE":
+            code, mu, logvar = self.model.encode(x.unsqueeze(0))
+            return mu.squeeze(1) if deterministic_vcae else code.squeeze(1)
+        else:
+            return self.model.encode(x.unsqueeze(0)).squeeze(1)

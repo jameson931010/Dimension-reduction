@@ -9,8 +9,9 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
+from utils import cal_ssim, cal_sisdr
 from forth_model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
-from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN
+from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
 from diffusion_decoder import LatentDiffusion, Quantizer, EMA
 
@@ -58,6 +59,7 @@ WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [int(sys.argv[4])]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}-{LEARNING_RATE_D}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_dfilter{NUM_FILTER_D}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
+RESULT_DIR = "diffusion_decoder"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 quantizer = Quantizer(num_bits=QUANT_BIT, learn_range=False)
 # --------------------------
@@ -84,13 +86,14 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     for p in model.parameters():
         p.requires_grad = False
 
-    # Infer code size from one batch to create diffusion model
-    x_0 = next(iter(train_loader)).to(DEVICE)
     latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, cond_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_EMB_DIM).to(DEVICE)
     ema = EMA(latent_diffusion.unet, decay=0.99)
+    latent_dataset = LatentDataset(model, dataset, DEVICE, (quantizer if (QUANT_BIT > 0) else None), SUBJECT_LIST, dataset.subject_len)
+    train_loader_d = DataLoader(Subset(latent_dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
+    val_loader_d = DataLoader(Subset(latent_dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
 
     if TRAIN_DIFFUSION:
-        model_state = train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold)
+        model_state = train_diffusion(model, latent_diffusion, ema, train_loader_d, val_loader_d, fold)
         torch.save(model_state, f"model/forth_diffusion_fold{fold}.pth")
     else:
         model_state = torch.load(f"model/forth_diffusion_fold{fold}.pth")
@@ -199,15 +202,10 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
         latent_diffusion.train()
         running = 0.0
         pbar = tqdm(train_loader, desc=f"Diffusion Epoch {epoch}/{EPOCHS_D}")
-        for batch in pbar:
-            x = batch.to(DEVICE)
-            with torch.no_grad():
-                z_q = get_code(model, x)
-                if QUANT_BIT > 0:
-                    z_q = quantizer(z_q.detach())#, hard=True)          # condition (hard quant)
+        for code, z_q, z_clean in pbar:
+            code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
             t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-            #loss = latent_diffusion.p_losses(z_clean, z_q, t)
-            loss = latent_diffusion.p_losses(x, z_q, t)
+            loss = latent_diffusion.p_losses(z_clean, z_q, t)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(latent_diffusion.parameters(), 1.0)
@@ -222,13 +220,10 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
         val_loss = 0.0
         with torch.no_grad():
             ema.copy_to_model()
-            for batch in val_loader:
-                batch = batch.to(DEVICE)
-                z_q = get_code(model, x)
-                if QUANT_BIT > 0:
-                    z_q = quantizer(z_q.detach())#, hard=True)          # condition (hard quant)
+            for code, z_q, z_clean in val_loader:
+                code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
                 t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-                val_loss += latent_diffusion.p_losses(x, z_q, t).item()
+                val_loss += latent_diffusion.p_losses(z_clean, z_q, t).item()
             ema.restore_model()
 
         scheduler.step(val_loss/len(val_loader))
@@ -255,7 +250,6 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
     if EARLY_STOPPING:
         return best_model_state
     else:
-        #return model.state_dict()
         return {
             'unet': latent_diffusion.state_dict(),
             'ema_shadow': ema.shadow_params,
@@ -310,6 +304,8 @@ def evaluation(model, latent_diffusion, ema, data_loader, name, quantize: bool, 
         PRDN = np.empty(len(data_loader))
         SNR = np.empty(len(data_loader))
         QS = np.empty(len(data_loader))
+        SSIM = np.empty(len(data_loader))
+        SISDR = np.empty(len(data_loader))
         cnt = 0
         for batch in data_loader:
             batch = batch.to(DEVICE)  # shape: (dataset.window_num, 1, 100, 128)
@@ -319,45 +315,39 @@ def evaluation(model, latent_diffusion, ema, data_loader, name, quantize: bool, 
             # The following assum mean=0
             prdn = torch.sqrt(SE/SS).item() * 100
             snr = 10 * (torch.log(SS/SE).item() if PAPER_SETTING else torch.log10(SS/SE).item())
+            ssim = cal_ssim(recon, batch).mean().item()
+            sisdr = cal_sisdr(recon, batch).mean().item()
             # qs = CR / prdn
             PRDN[cnt] = prdn
             SNR[cnt] = snr
+            SSIM[cnt] = ssim
+            SISDR[cnt] = sisdr
             #QS[cnt] = qs
             cnt += 1
 
         dual_print(f"   CR: {CR:.2f}")
         dual_print(f"   PRDN: {PRDN.mean():.3f}")
         dual_print(f"   SNR: {SNR.mean():.3f}")
+        dual_print(f"   SSIM: {SSIM.mean():.3f}")
+        dual_print(f"   SI-SDR: {SISDR.mean():.3f}")
         #dual_print(f"   QS: {QS.mean():.3f}")
         if PLOT_METRIC:
             if len(SUBJECT_LIST) == 1:
                 plot_metric(PRDN.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"PRDN_{name}")
                 plot_metric(SNR.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SNR_{name}")
+                plot_metric(SSIM.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SSIM_{name}")
+                plot_metric(SISDR.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SISDR_{name}")
                 #plot_metric(QS.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"QS_{name}")
             else:
                 plot_metric(PRDN.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"PRDN_{name}")
                 plot_metric(SNR.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SNR_{name}")
+                plot_metric(SSIM.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SSIM{name}")
+                plot_metric(SISDR.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SISDR_{name}")
                 #plot_metric(QS.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"QS_{name}")
-
-
-def check_dimension():
-    model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
-    x = torch.randn(1, 1, 100, 128).to(DEVICE)
-    x = x.squeeze(1).permute(0, 2, 1)
-    print(f"shape: {x.shape}")
-    for i, layer in enumerate(model.encoder):
-        x = layer(x)
-        print(f"shape of {i}: {x.shape}")
-    for i, layer in enumerate(model.decoder):
-        x = layer(x)
-        print(f"shape of {i}: {x.shape}")
-    x = x.permute(0, 2, 1).unsqueeze(1)
-    print(f"shape: {x.shape}")
-    exit(0)
 
 def dual_print(mes):
     print(mes)
-    with open(f"log/{NAME}.log", 'a') as f:
+    with open(f"{RESULT_DIR}/{NAME}.log", 'a') as f:
         f.write(str(mes) + '\n')
     
 def cal_loss(x, recon, mu, logvar, beta):
@@ -416,5 +406,4 @@ if __name__ == '__main__':
                     else:
                         train_idx.extend([idx_base + i for i in range(dataset.window_num)])
 
-        #check_dimension()
         process_one_fold(train_idx, val_idx, test_idx, fold)

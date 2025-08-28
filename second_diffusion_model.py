@@ -144,7 +144,7 @@ class LatentUNet(nn.Module):
         return x
 
 class LatentDiffusion(nn.Module):
-    def __init__(self, code_channels: int = 1, num_filter: int = 256, T: int = 1500, time_dim: int = 128, s: float = 0.008):
+    def __init__(self, code_channels: int, num_filter: int, T: int, time_dim: int, s: float = 0.008):
         super().__init__()
         #betas = torch.linspace(1e-4, 0.02, T, dtype=torch.float32)
         #betas = torch.clip((torch.cos(torch.linspace(0, 1, T+1) * math.pi / 2 + s) / (1 + s)) ** 2, min=1e-5, max=0.999)
@@ -182,7 +182,7 @@ class LatentDiffusion(nn.Module):
         #return F.mse_loss(noise_pred, noise)
 
     @torch.no_grad()
-    def ddim_sample(self, z_q, steps: int = 50, eta: float = 0.5):#0.0):
+    def ddim_sample(self, z_q, steps: int, eta: float = 0.5):#0.0):
         """
         DDIM sampling conditioned on z_q. Returns a denoised latent z_hat.
         Works with arbitrary spatial sizes because Up uses stored output_size.
