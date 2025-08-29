@@ -101,9 +101,9 @@ class Up(nn.Module):
         return x
 
 class LatentUNet(nn.Module):
-    def __init__(self, code_channels: int, base: int, time_dim: int):
+    def __init__(self, code_channels: int, base: int, time_dim: int, temp: int = 4):
         super().__init__()
-        t_embed_dim = base * 4
+        t_embed_dim = base * temp
         self.t_embed = TimestepEmbedding(time_dim, t_embed_dim)
         cin = code_channels * 2  # will concat noisy z_t and quantized z_q
         self.in_conv = nn.Conv2d(cin, base, 3, padding=1)
@@ -144,7 +144,7 @@ class LatentUNet(nn.Module):
         return x
 
 class LatentDiffusion(nn.Module):
-    def __init__(self, code_channels: int, num_filter: int, T: int, time_dim: int, s: float = 0.008):
+    def __init__(self, code_channels: int, num_filter: int, T: int, time_dim: int, temp: int=4, s: float = 0.008):
         super().__init__()
         #betas = torch.linspace(1e-4, 0.02, T, dtype=torch.float32)
         #betas = torch.clip((torch.cos(torch.linspace(0, 1, T+1) * math.pi / 2 + s) / (1 + s)) ** 2, min=1e-5, max=0.999)
@@ -160,7 +160,7 @@ class LatentDiffusion(nn.Module):
         self.register_buffer('alphas', alphas)
         self.register_buffer('alpha_bars', alpha_bars)
         self.T = T
-        self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim)
+        self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim, temp=temp)
 
     def q_sample(self, z0, t, noise): # Forward
         # t is a (B,) tensor of indices

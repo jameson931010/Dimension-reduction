@@ -41,14 +41,15 @@ BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4
 LEARNING_RATE_D = 2e-4
-WEIGHT_DECAY = 1e-5
+WEIGHT_DECAY = 0# 1e-5
 
-TIME_EMB_DIM = 128 # The dimension to represent the timesteps in cosine scheduling
-NUM_POOLING = int(sys.argv[2])
-NUM_FILTER = int(sys.argv[3])
-NUM_FILTER_D = 128 # The number of filter in the unet of diffusion model
-DIFFUSION_INF_STEPS = 50        # DDIM steps at inference
-DIFFUSION_TRAIN_STEPS = 1500
+TIME_EMB_DIM = int(sys.argv[2])#128 # The dimension to represent the timesteps in cosine scheduling
+NUM_POOLING = 1#int(sys.argv[2])
+NUM_FILTER = 1#int(sys.argv[3])
+NUM_FILTER_D = int(sys.argv[3])#128 # The number of filter in the unet of diffusion model
+DIFFUSION_INF_STEPS = int(sys.argv[5])#50        # DDIM steps at inference
+DIFFUSION_TRAIN_STEPS = int(sys.argv[4])#1500
+TEMP = int(sys.argv[6])
 QUANT_BIT = 6
 
 random.seed(141)
@@ -56,7 +57,7 @@ np.random.seed(141)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
-SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [int(sys.argv[4])]
+SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]#[int(sys.argv[4])]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}-{LEARNING_RATE_D}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_dfilter{NUM_FILTER_D}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
 RESULT_DIR = "diffusion_latent"
@@ -86,7 +87,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     for p in model.parameters():
         p.requires_grad = False
 
-    latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_EMB_DIM).to(DEVICE)
+    latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_EMB_DIM, temp=TEMP).to(DEVICE)
     ema = EMA(latent_diffusion.unet, decay=0.99)
     latent_dataset = LatentDataset(model, dataset, DEVICE, (quantizer if (QUANT_BIT > 0) else None), SUBJECT_LIST, dataset.subject_len)
     train_loader_d = DataLoader(Subset(latent_dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
@@ -192,7 +193,7 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
 
     optimizer = optim.Adam(latent_diffusion.parameters(), lr=LEARNING_RATE_D, weight_decay=WEIGHT_DECAY)
     #optimizer = optim.Adam(list(latent_diffusion.parameters()) + list(quantizer.parameters()), lr=LEARNING_RATE_D, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.85, patience=10)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=10)
 
     best_val_loss = float('inf')
     best_model_state = None
@@ -219,12 +220,12 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
         latent_diffusion.eval()
         val_loss = 0.0
         with torch.no_grad():
-            ema.copy_to_model()
+            #ema.copy_to_model()
             for code, z_q, z_clean in val_loader:
                 code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
                 t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
                 val_loss += latent_diffusion.p_losses(code, z_q, t).item()
-            ema.restore_model()
+            #ema.restore_model()
 
         scheduler.step(val_loss/len(val_loader))
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
@@ -271,9 +272,9 @@ def evaluation(model, latent_diffusion, ema, data_loader, name, quantize: bool, 
                 z_clean = get_code(model, x)
                 if QUANT_BIT > 0:
                     z_q = quantizer(z_clean)
-                ema.copy_to_model()
+                #ema.copy_to_model()
                 z_hat = latent_diffusion.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS)
-                ema.restore_model()
+                #ema.restore_model()
                 return decode_from_code(model, z_hat)
             else:
                 z = get_code(model, x, deterministic_vcae=True)
