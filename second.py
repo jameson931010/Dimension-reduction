@@ -9,7 +9,7 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from conformer_model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
+from trans_model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
 from utils import cal_ssim, cal_sisdr
