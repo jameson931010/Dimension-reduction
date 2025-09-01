@@ -9,7 +9,7 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
+from conformer_model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN
 from plot import plot_channel, plot_heatmap, plot_metric
 from utils import cal_ssim, cal_sisdr
@@ -21,8 +21,8 @@ EARLY_STOPPING = True
 ALL_SUBJECT = False # inter- or intra-subject
 ALL_KFOLD = False
 
-TRAIN_AE = False
-TRAIN_DIFFUSION = True # With AE frozen
+TRAIN_AE = True
+TRAIN_DIFFUSION = False # With AE frozen
 EVAL_TRAIN = True
 EVAL_AE = True
 EVAL_QUANT = True
@@ -73,13 +73,15 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
+    #model_path = f"model/main_fold{fold}.pth" if NUM_POOLING == 1 else f"model/main_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"model/trans_fold{fold}.pth" if NUM_POOLING == 1 else f"model/trans_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN_AE:
         model_state = training(model, train_loader, val_loader)
-        torch.save(model_state, f"model/main_fold{fold}.pth")
+        torch.save(model_state, model_path)
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Model saved for {fold} fold\n")
     else:
-        model_state = torch.load(f"model/main_fold{fold}.pth")
+        model_state = torch.load(model_path)
     model.load_state_dict(model_state)
 
     # Freeze model

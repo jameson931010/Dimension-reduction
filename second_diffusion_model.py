@@ -28,6 +28,27 @@ class TimestepEmbedding(nn.Module):
         x = self.act(self.fc2(x))
         return x
 
+class CrossAttention(nn.Module):
+    def __init__(self, query_dim: int, cond_dim: int, num_heads: int = 2):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(embed_dim=query_dim, num_heads=num_heads, batch_first=True)
+        self.proj_cond = nn.Linear(cond_dim, query_dim)  # Project cond to match query dim if needed
+
+    def forward(self, query, cond):
+        b, c_q, h_q, w_q = query.shape
+        query_flat = query.flatten(2).permute(0, 2, 1)
+
+        # cond: (B, C_cond, H_cond, W_cond) -> flatten to (H_cond*W_cond, B, C_q)
+        b, c_cond, h_cond, w_cond = cond.shape
+        cond_flat = cond.flatten(2).permute(0, 2, 1)  # (H_cond*W_cond, B, C_cond)
+        cond_flat = self.proj_cond(cond_flat)  # Project to C_q
+
+        # Cross-attn: query from noisy signal, key/value from cond (latent)
+        attended = self.attn(query_flat, cond_flat, cond_flat)[0]
+        #attended = nn.Dropout(p=0.1)(attended)
+        attended = attended.permute(0, 2, 1).view(b, c_q, h_q, w_q)
+        return attended
+
 class ResBlock(nn.Module):
     def __init__(self, c: int, tdim: int):
         super().__init__()
@@ -36,12 +57,17 @@ class ResBlock(nn.Module):
         self.conv1 = nn.Conv2d(c, c, 3, padding=1)
         self.norm2 = nn.GroupNorm(g, c)
         self.conv2 = nn.Conv2d(c, c, 3, padding=1)
-        self.emb = nn.Linear(tdim, c)
+        self.emb = nn.Linear(tdim, 2*c)
+        #self.emb = nn.Linear(tdim, c)
         self.act = nn.SiLU()
         self.attn = nn.MultiheadAttention(embed_dim=c, num_heads=4)
     def forward(self, x, t_emb):
-        h = self.conv1(self.act(self.norm1(x)))
-        h = h + self.emb(t_emb)[:, :, None, None]
+        #h = self.conv1(self.act(self.norm1(x)))
+        #h = h + self.emb(t_emb)[:, :, None, None]
+        gamma, beta = self.emb(t_emb)[:, :, None, None].chunk(2, dim=1)
+        norm = self.norm1(x)
+        h = gamma * norm + beta
+        h = self.conv1(self.act(h))
         h = self.conv2(self.act(self.norm2(h)))
         """
         b, c, h, w = x.shape
@@ -108,7 +134,10 @@ class LatentUNet(nn.Module):
         cin = code_channels * 2  # will concat noisy z_t and quantized z_q
         self.in_conv = nn.Conv2d(cin, base, 3, padding=1)
 
-        # depth = 2 (can be tuned). Use Down/Up pairs that store shapes.
+        self.cross_attn1 = CrossAttention(base, 1, 2)
+        self.cross_attn2 = CrossAttention(base * 2, 1, 2)
+        self.cross_attn_mid = CrossAttention(base * 4, 1, 4)
+
         self.d1 = Down(base, base * 2, t_embed_dim)
         self.d2 = Down(base * 2, base * 4, t_embed_dim)
 
@@ -131,9 +160,11 @@ class LatentUNet(nn.Module):
         x = self.act(self.in_conv(x))
 
         # Down path: record shapes
+        x = x + self.cross_attn1(x, z_q)
         x, s1 = self.d1(x, t_emb)   # s1 = (H1, W1)
+        x = x + self.cross_attn2(x, z_q)
         x, s2 = self.d2(x, t_emb)   # s2 = (H2, W2)
-
+        x = x + self.cross_attn_mid(x, z_q)
         x = self.mid(x, t_emb)
 
         # Up path: use recorded shapes in reverse

@@ -35,12 +35,17 @@ class ResBlock(nn.Module):
         self.conv1 = nn.Conv2d(c, c, 3, padding=1)
         self.norm2 = nn.GroupNorm(g, c)
         self.conv2 = nn.Conv2d(c, c, 3, padding=1)
-        self.emb = nn.Linear(tdim, c)
+        #self.emb = nn.Linear(tdim, c)
+        self.emb = nn.Linear(tdim, 2*c)
         self.act = nn.SiLU()
         self.attn = nn.MultiheadAttention(embed_dim=c, num_heads=4)
     def forward(self, x, t_emb):
-        h = self.conv1(self.act(self.norm1(x)))
-        h = h + self.emb(t_emb)[:, :, None, None]
+        #h = self.conv1(self.act(self.norm1(x)))
+        #h = h + self.emb(t_emb)[:, :, None, None]
+        gamma, beta =  self.emb(t_emb)[:, :, None, None].chunk(2, dim=1)
+        h = self.norm1(x)
+        h = gamma * h + beta
+        h = self.conv1(self.act(h))
         h = self.conv2(self.act(self.norm2(h)))
         """
         b, c, h, w = x.shape
@@ -100,7 +105,7 @@ class Up(nn.Module):
         return x
 
 class CrossAttention(nn.Module):
-    def __init__(self, query_dim: int, cond_dim: int, num_heads: int = 4):
+    def __init__(self, query_dim: int, cond_dim: int, num_heads: int = 2):
         super().__init__()
         self.attn = nn.MultiheadAttention(embed_dim=query_dim, num_heads=num_heads, batch_first=True)
         self.proj_cond = nn.Linear(cond_dim, query_dim)  # Project cond to match query dim if needed
@@ -116,6 +121,7 @@ class CrossAttention(nn.Module):
 
         # Cross-attn: query from noisy signal, key/value from cond (latent)
         attended = self.attn(query_flat, cond_flat, cond_flat)[0]
+        #attended = nn.Dropout(p=0.1)(attended)
         attended = attended.permute(0, 2, 1).view(b, c_q, h_q, w_q)
         return attended
 
@@ -127,15 +133,15 @@ class LatentUNet(nn.Module):
         self.in_conv = nn.Conv2d(code_channels + cond_channels, base, 3, padding=1)
 
         # Cross-attn layers for conditioning (add at multiple levels)
-        self.cross_attn1 = CrossAttention(base, cond_channels)
-        self.cross_attn2 = CrossAttention(base * 2, cond_channels)
-        self.cross_attn_mid = CrossAttention(base * 4, cond_channels)
+        self.cross_attn1 = CrossAttention(base, cond_channels, 1)
+        self.cross_attn2 = CrossAttention(base * 2, cond_channels, 1)
+        self.cross_attn_mid = CrossAttention(base * 4, cond_channels, 4)
 
         # Upsample cond latent to roughly match signal spatial dims (optional helper for attn)
         self.cond_upsample = nn.Sequential(
             nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1),
             nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1),
-            nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1)
+            #nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1)
         )
 
         self.d1 = Down(base, base * 2, t_embed_dim)
@@ -155,16 +161,16 @@ class LatentUNet(nn.Module):
         t_emb = self.t_embed(t_int)
 
         # Upsample z_q to closer spatial match (helps attn)
-        #z_upsampled = self.cond_upsample(z_q)  # Now ~ (B,4,96,128) or similar; pad/crop if needed
+        z_upsampled = self.cond_upsample(z_q)  # Now ~ (B,4,96,128) or similar; pad/crop if needed
         #z_upsampled = z_q
-        z_upsampled = F.interpolate(z_q, size=x_t.shape[2:], mode='bilinear')
+        #z_upsampled = F.interpolate(z_q, size=x_t.shape[2:], mode='bilinear')
         x_cat = torch.cat([x_t, z_upsampled], dim=1)
         x = self.act(self.in_conv(x_cat))
 
         # Down path with cross-attn
-        #x = x + self.cross_attn1(x, z_upsampled)  # Add conditioned features
+        x = x + self.cross_attn1(x, z_upsampled)  # Add conditioned features
         x, s1 = self.d1(x, t_emb)
-        #x = x + self.cross_attn2(x, z_upsampled)  # Downsampled z could be added, but reuse upsampled for simplicity
+        x = x + self.cross_attn2(x, z_upsampled)  # Downsampled z could be added, but reuse upsampled for simplicity
         x, s2 = self.d2(x, t_emb)
 
         x = x + self.cross_attn_mid(x, z_upsampled)
