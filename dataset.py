@@ -86,7 +86,9 @@ class LatentDataset(torch.utils.data.Dataset):
                     code = self._get_code(x)
                     if quantizer:
                         z_q = quantizer(code.detach())
-                    self.samples[sub][idx] = [code, z_q]
+                        self.samples[sub][idx] = [code, z_q]
+                    else:
+                        self.samples[sub][idx] = [code, code]
 
     def __len__(self):
         return len(self.samples) * self.subject_len
