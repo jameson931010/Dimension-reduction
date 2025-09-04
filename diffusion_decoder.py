@@ -65,7 +65,9 @@ class Down(nn.Module):
         super().__init__()
         self.block1 = ResBlock(cin, tdim)
         # Use 1x1 conv to change channels after pooling (or if no pooling necessary)
-        self.proj = nn.Conv2d(cin, cout, 1)
+        self.conv = nn.Conv2d(cin, cin, kernel_size=2, stride=2)
+        #self.proj = nn.Conv2d(cin, cout, 1)
+        self.proj = nn.Conv2d(cin, cout, kernel_size=2, stride=2)
         self.block2 = ResBlock(cout, tdim)
 
     def forward(self, x, t):
@@ -78,7 +80,8 @@ class Down(nn.Module):
             new_H = H // 2 if H >= 2 else H
             new_W = W // 2 if W >= 2 else W
             # use area pooling via interpolate for stable fractional sizes
-            x = F.interpolate(x, size=(new_H, new_W), mode='bilinear', align_corners=False)
+            #x = F.interpolate(x, size=(new_H, new_W), mode='bilinear', align_corners=False)
+        # x = self.conv(x)
         # change channels
         x = self.proj(x)
         x = self.block2(x, t)
@@ -92,14 +95,17 @@ class Up(nn.Module):
         super().__init__()
         self.block1 = ResBlock(cin, tdim)
         # project channels after upsampling
-        self.proj = nn.Conv2d(cin, cout, 1)
+        self.conv = nn.ConvTranspose2d(cin, cin, kernel_size=2, stride=2)
+        #self.proj = nn.Conv2d(cin, cout, 1)
+        self.proj = nn.ConvTranspose2d(cin, cout, kernel_size=2, stride=2)
         self.block2 = ResBlock(cout, tdim)
 
     def forward(self, x, t, output_size):
         # output_size: (H, W) to restore exactly
         x = self.block1(x, t)
         # interpolate to exact target size (guarantees matching shapes)
-        x = F.interpolate(x, size=output_size, mode='bilinear', align_corners=False)
+        #x = self.conv(x)
+        #x = F.interpolate(x, size=output_size, mode='bilinear', align_corners=False)
         x = self.proj(x)
         x = self.block2(x, t)
         return x
@@ -140,7 +146,7 @@ class LatentUNet(nn.Module):
         # Upsample cond latent to roughly match signal spatial dims (optional helper for attn)
         self.cond_upsample = nn.Sequential(
             nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1),
-            nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1),
+            #nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1),
             #nn.ConvTranspose2d(cond_channels, cond_channels, kernel_size=4, stride=2, padding=1)
         )
 
@@ -168,9 +174,9 @@ class LatentUNet(nn.Module):
         x = self.act(self.in_conv(x_cat))
 
         # Down path with cross-attn
-        x = x + self.cross_attn1(x, z_upsampled)  # Add conditioned features
+        #x = x + self.cross_attn1(x, z_upsampled)  # Add conditioned features
         x, s1 = self.d1(x, t_emb)
-        x = x + self.cross_attn2(x, z_upsampled)  # Downsampled z could be added, but reuse upsampled for simplicity
+        #x = x + self.cross_attn2(x, z_upsampled)  # Downsampled z could be added, but reuse upsampled for simplicity
         x, s2 = self.d2(x, t_emb)
 
         x = x + self.cross_attn_mid(x, z_upsampled)

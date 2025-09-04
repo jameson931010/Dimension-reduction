@@ -133,6 +133,7 @@ class EMG128CAE(nn.Module):
         )
 
     def encode(self, h: torch.Tensor) -> torch.Tensor:
+        #h = h[:,:,::2,:]
         for conv, pool in zip(self.encoder_convs, self.encoder_pools):
             h = conv(h)
             h = pool(h)
@@ -147,6 +148,7 @@ class EMG128CAE(nn.Module):
             h = self.decoder_blocks[i](h)
 
         h = self.reconstruct(h)
+        #h = F.interpolate(h, scale_factor=[2,1], mode='bilinear')
         return h
 
 

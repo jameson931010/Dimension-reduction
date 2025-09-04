@@ -86,6 +86,8 @@ class Down(nn.Module):
         """
         super().__init__()
         self.block1 = ResBlock(cin, tdim)
+        #self.conv = nn.Conv2d(cin, cin, kernel_size=2, stride=2)
+        self.conv = nn.Conv2d(cin, cout, kernel_size=2, stride=2)
         # Use 1x1 conv to change channels after pooling (or if no pooling necessary)
         self.proj = nn.Conv2d(cin, cout, 1)
         self.block2 = ResBlock(cout, tdim)
@@ -100,9 +102,10 @@ class Down(nn.Module):
             new_H = H // 2 if H >= 2 else H
             new_W = W // 2 if W >= 2 else W
             # use area pooling via interpolate for stable fractional sizes
-            x = F.interpolate(x, size=(new_H, new_W), mode='bilinear', align_corners=False)
+            #x = F.interpolate(x, size=(new_H, new_W), mode='bilinear', align_corners=False)
+        x = self.conv(x)
         # change channels
-        x = self.proj(x)
+        #x = self.proj(x)
         x = self.block2(x, t)
         return x, pre_shape
 
@@ -113,6 +116,10 @@ class Up(nn.Module):
         """
         super().__init__()
         self.block1 = ResBlock(cin, tdim)
+        #self.conv_nopad = nn.ConvTranspose2d(cin, cin, kernel_size=2, stride=2)
+        #self.conv_pad = nn.ConvTranspose2d(cin, cin, kernel_size=2, stride=2, output_padding=[1, 0])
+        self.conv_nopad = nn.ConvTranspose2d(cin, cout, kernel_size=2, stride=2)
+        self.conv_pad = nn.ConvTranspose2d(cin, cout, kernel_size=2, stride=2, output_padding=[1, 0])
         # project channels after upsampling
         self.proj = nn.Conv2d(cin, cout, 1)
         self.block2 = ResBlock(cout, tdim)
@@ -121,8 +128,13 @@ class Up(nn.Module):
         # output_size: (H, W) to restore exactly
         x = self.block1(x, t)
         # interpolate to exact target size (guarantees matching shapes)
-        x = F.interpolate(x, size=output_size, mode='bilinear', align_corners=False)
-        x = self.proj(x)
+        #x = F.interpolate(x, size=output_size, mode='bilinear', align_corners=False)
+        if output_size[0]&1:
+            x = self.conv_pad(x)
+        else:
+            x = self.conv_nopad(x)
+        #x = self.conv(x)
+        #x = self.proj(x)
         x = self.block2(x, t)
         return x
 
@@ -134,8 +146,8 @@ class LatentUNet(nn.Module):
         cin = code_channels * 2  # will concat noisy z_t and quantized z_q
         self.in_conv = nn.Conv2d(cin, base, 3, padding=1)
 
-        self.cross_attn1 = CrossAttention(base, 1, 2)
-        self.cross_attn2 = CrossAttention(base * 2, 1, 2)
+        self.cross_attn1 = CrossAttention(base, 1, 1)
+        self.cross_attn2 = CrossAttention(base * 2, 1, 1)
         self.cross_attn_mid = CrossAttention(base * 4, 1, 4)
 
         self.d1 = Down(base, base * 2, t_embed_dim)

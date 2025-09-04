@@ -19,10 +19,10 @@ from lstm import LSTMRefiner
 # --------- Config ---------
 PAPER_SETTING = False
 EARLY_STOPPING = True
-ALL_SUBJECT = False # inter- or intra-subject
+ALL_SUBJECT = True # inter- or intra-subject
 ALL_KFOLD = False
 
-TRAIN_AE = False
+TRAIN_AE = True
 TRAIN_DIFFUSION = False # With AE frozen
 TRAIN_LSTM = True
 EVAL_TRAIN = True
@@ -76,7 +76,8 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
-    model_path = f"model/main_fold{fold}.pth" if NUM_POOLING == 1 else f"model/main_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"model/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model/all_{NUM_POOLING}_fold{fold}.pth"
+    #model_path = f"model/main_fold{fold}.pth" if NUM_POOLING == 1 else f"model/main_{NUM_POOLING}_fold{fold}.pth"
     #model_path = f"model/trans_fold{fold}.pth" if NUM_POOLING == 1 else f"model/trans_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN_AE:
         model_state = training(model, train_loader, val_loader)
@@ -94,7 +95,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
 
     latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_EMB_DIM, temp=TEMP).to(DEVICE)
     ema = EMA(latent_diffusion.unet, decay=0.99)
-    lstm = LSTMRefiner(NUM_FILTER*64, 256, 2).to(DEVICE)
+    lstm = LSTMRefiner(NUM_FILTER*64, 128, 2).to(DEVICE)
     latent_dataset = LatentDataset(model, dataset, DEVICE, (quantizer if (QUANT_BIT > 0) else None), SUBJECT_LIST, dataset.subject_len)
     train_loader_d = DataLoader(Subset(latent_dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
     val_loader_d = DataLoader(Subset(latent_dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
