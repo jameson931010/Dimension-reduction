@@ -19,17 +19,17 @@ from lstm import LSTMRefiner
 # --------- Config ---------
 PAPER_SETTING = False
 EARLY_STOPPING = True
-ALL_SUBJECT = True # inter- or intra-subject
+ALL_SUBJECT = False # inter- or intra-subject
 ALL_KFOLD = False
 
 TRAIN_AE = True
-TRAIN_DIFFUSION = False # With AE frozen
-TRAIN_LSTM = True
+TRAIN_DIFFUSION = True # With AE frozen
+TRAIN_LSTM = False
 EVAL_TRAIN = True
 EVAL_AE = True
 EVAL_QUANT = True
-EVAL_DIFFUSION = False
-EVAL_LSTM = True
+EVAL_DIFFUSION = True
+EVAL_LSTM = False
 PRINT_TRAIN = True
 PLOT_METRIC = False
 
@@ -76,8 +76,9 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
-    model_path = f"model/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model/all_{NUM_POOLING}_fold{fold}.pth"
+    #model_path = f"model/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model/all_{NUM_POOLING}_fold{fold}.pth"
     #model_path = f"model/main_fold{fold}.pth" if NUM_POOLING == 1 else f"model/main_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"model/vcae_fold{fold}.pth" if NUM_POOLING == 1 else f"model/vcae_{NUM_POOLING}_fold{fold}.pth"
     #model_path = f"model/trans_fold{fold}.pth" if NUM_POOLING == 1 else f"model/trans_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN_AE:
         model_state = training(model, train_loader, val_loader)

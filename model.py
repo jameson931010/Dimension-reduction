@@ -9,131 +9,88 @@ class EMG128CAE(nn.Module):
     FILTER_NUM = 48 # The number of convolution filter in intermediate layer
     K = 3                    # conv kernel
     P = 1                    # padding for K=3
-    POOL_K = 2
-    POOL_S = 2
-    NUM_GROUP = 4
-    DROP_OUT_RATE = 0.1
-    # bits: bits after quantization; input resolution bits = 16
+    POOL_K = 2 # Kernel for up-/down-sampling
+    POOL_S = 2 # Stride for up-/down-sampling
+    NUM_GROUP = 4 # The number of group for group normalization
 
-    def __init__(self, num_pooling: int = 3, num_filter: int = 4, num_conv: int = 2):
+    def __init__(self, num_pooling = 3, num_filter = 4, num_conv = 2):
         """
-        num_pooling: the number of pooling layer in encoder (mirrored by unpool in decoder)
-        num_filter: code depth (channels of final encoder conv)        
-        num_conv: the number of convolution layer before each pooling
+        num_pooling: The number of pooling layer in encoder (mirrored by unpool in decoder)
+        num_filter: Code depth (channels of final encoder conv)        
+        num_conv: The number of convolution layer before each pooling
         """
         super().__init__()
-        assert num_pooling >= 1
-        assert num_filter >= 1
         
         # Encoder
-        enc_blocks, pools, prepool_sizes, add_padding = [], [], [], []
+        convs, pools, add_padding = [], [], []
         dim_t, dim_c = INPUT_TIME_DIM, INPUT_CHANNEL_DIM
         in_ch = 1 # For the first layer
-        #power = 1
+
         for i in range(num_pooling):
             network = [
-                #nn.Conv2d(in_ch*power, self.FILTER_NUM * power, kernel_size=self.K, padding=self.P),
                 nn.Conv2d(in_ch, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-                #nn.BatchNorm2d(self.FILTER_NUM*power),
-                #nn.BatchNorm2d(self.FILTER_NUM),
                 nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-                #nn.ReLU(inplace=True),
                 nn.LeakyReLU(inplace=True),
             ]
             for _ in range(num_conv-1):
                 network.extend([
-                    #nn.Conv2d(self.FILTER_NUM * power, self.FILTER_NUM * power*2, kernel_size=self.K, padding=self.P),
                     nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-                    #nn.BatchNorm2d(self.FILTER_NUM * power*2),
-                    #nn.BatchNorm2d(self.FILTER_NUM),
                     nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-                    #nn.ReLU(inplace=True),
                     nn.LeakyReLU(inplace=True),
                 ])
-            enc_blocks.append(nn.Sequential(*network))
-            #power *= 2
-            #pools.append(nn.MaxPool2d(kernel_size=self.POOL_K, stride=self.POOL_S, return_indices=True))
-            #pools.append(nn.Conv2d(self.FILTER_NUM*power, self.FILTER_NUM*power, kernel_size=self.POOL_K, stride=self.POOL_S))
+            convs.append(nn.Sequential(*network))
             pools.append(nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_K, stride=self.POOL_S))
-            prepool_sizes.append([dim_t, dim_c])
+
+            # For symmetric reconstruction
             add_padding.append([dim_t & 1, dim_c & 1])
             dim_t, dim_c = dim_t // 2, dim_c // 2
-            in_ch = self.FILTER_NUM # For remaining layer in encoder
 
-        self.encoder_convs = nn.ModuleList(enc_blocks)
+            # For remaining layer in encoder
+            in_ch = self.FILTER_NUM 
+
+        self.encoder_convs = nn.ModuleList(convs)
         self.encoder_pools = nn.ModuleList(pools)
 
         # Project to code
-        self.to_code = nn.Sequential(
-            #nn.Conv2d(self.FILTER_NUM*power, self.FILTER_NUM*power, kernel_size=self.K, padding=self.P),
+        proj = [
             nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-            #nn.BatchNorm2d(self.FILTER_NUM*power),
-            #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            #nn.ReLU(inplace=True),
             nn.LeakyReLU(inplace=True),
-            #nn.Conv2d(self.FILTER_NUM*power, self.FILTER_NUM*power, kernel_size=self.K, padding=self.P),
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-            #nn.BatchNorm2d(self.FILTER_NUM*power),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            #nn.ReLU(inplace=True),
-            nn.LeakyReLU(inplace=True),
-            #nn.Conv2d(self.FILTER_NUM*power, self.FILTER_NUM*power, kernel_size=self.K, padding=self.P),
-            nn.Conv2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-            #nn.BatchNorm2d(self.FILTER_NUM*power),
-            #nn.BatchNorm2d(self.FILTER_NUM),
-            nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            #nn.ReLU(inplace=True),
-            nn.LeakyReLU(inplace=True),
+        ] * 3
+        proj.append(nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.K, padding=self.P))
+        self.to_code = nn.Sequential(*proj)
 
-            #nn.Conv2d(self.FILTER_NUM*power, num_filter, kernel_size=self.K, padding=self.P),
-            nn.Conv2d(self.FILTER_NUM, num_filter, kernel_size=self.K, padding=self.P),
-        )
+        # Project from code
         self.from_code = nn.Sequential(
-            #nn.ConvTranspose2d(num_filter, self.FILTER_NUM*power, kernel_size=self.K, padding=self.P, stride=1),
             nn.ConvTranspose2d(num_filter, self.FILTER_NUM, kernel_size=self.K, padding=self.P, stride=1),
-            #nn.BatchNorm2d(self.FILTER_NUM*power),
-            #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            #nn.ReLU(inplace=True),
             nn.LeakyReLU(inplace=True),
         )
 
         # Decoder
-        dec_blocks, unpools = [], []
+        convtrans, unpools = [], []
         for i in reversed(range(num_pooling)):
-            #unpools.append(nn.ConvTranspose2d(self.FILTER_NUM*power, self.FILTER_NUM*power, kernel_size=self.POOL_K, stride=self.POOL_S, output_padding=add_padding[i]))
             unpools.append(nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.POOL_K, stride=self.POOL_S, output_padding=add_padding[i]))
-            #unpools.append(nn.MaxUnpool2d(kernel_size=self.POOL_K, stride=self.POOL_S))
             network = []
             for j in range(num_conv):
                 network.extend([
-                    #nn.ConvTranspose2d(self.FILTER_NUM*power, self.FILTER_NUM*power//pow(2, j), kernel_size=self.K, padding=self.P),
                     nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-                    #nn.BatchNorm2d(self.FILTER_NUM*power//pow(2, j)),
-                    #nn.BatchNorm2d(self.FILTER_NUM),
                     nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-                    #nn.ReLU(inplace=True),
                     nn.LeakyReLU(inplace=True),
                 ])
-            dec_blocks.append(nn.Sequential(*network))
-            #power //= 2
+            convtrans.append(nn.Sequential(*network))
         self.decoder_unpools = nn.ModuleList(unpools)
-        self.decoder_blocks = nn.ModuleList(dec_blocks)
+        self.decoder_convs = nn.ModuleList(convtrans)
 
         # Final reconstruction
         self.reconstruct = nn.Sequential(
             nn.ConvTranspose2d(self.FILTER_NUM, self.FILTER_NUM, kernel_size=self.K, padding=self.P),
-            #nn.BatchNorm2d(self.FILTER_NUM),
             nn.GroupNorm(num_groups=self.NUM_GROUP, num_channels=self.FILTER_NUM),
-            #nn.ReLU(inplace=True),
             nn.LeakyReLU(inplace=True),
             nn.ConvTranspose2d(self.FILTER_NUM, 1, kernel_size=self.K, padding=self.P),
         )
 
     def encode(self, h: torch.Tensor) -> torch.Tensor:
-        #h = h[:,:,::2,:]
         for conv, pool in zip(self.encoder_convs, self.encoder_pools):
             h = conv(h)
             h = pool(h)
@@ -142,15 +99,11 @@ class EMG128CAE(nn.Module):
 
     def decode(self, h: torch.Tensor) -> torch.Tensor:
         h = self.from_code(h)
-        for i in range(len(self.decoder_blocks)):
-            #h = self.decoder_unpools[i](h, self._pool_indices[i], output_size=self._prepool_sizes[i])
-            h = self.decoder_unpools[i](h)
-            h = self.decoder_blocks[i](h)
-
+        for unpool, conv in zip(self.decoder_unpools, self.decoder_convs):
+            h = unpool(h)
+            h = conv(h)
         h = self.reconstruct(h)
-        #h = F.interpolate(h, scale_factor=[2,1], mode='bilinear')
         return h
-
 
     def forward(self, x):
         h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]
