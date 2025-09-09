@@ -103,17 +103,16 @@ class Up(nn.Module):
         return x
 
 class LatentUNet(nn.Module):
-    def __init__(self, code_channels: int, base: int, time_dim: int, temp: int = 4):
+    def __init__(self, code_channels: int, base: int, time_dim: int, t_embed_dim: int):
         """
         code_channels: Code depth
-        base: The (base) hidden dimension for diffusion model
-        time_dim: The dimension used to represent timesteps
+        base: The (base) filter dimension for diffusion model
+        time_dim: The dimension to represent timesteps
         time_embed_dim: The dimension to embed the time condition
         """
         super().__init__()
-        t_embed_dim = base * temp
         self.t_embed = TimestepEmbedding(time_dim, t_embed_dim)
-        cin = code_channels * 2  # will concat noisy z_t and quantized z_q
+        cin = code_channels * 2  # concatenated noisy z_t and quantized z_q
         self.in_conv = nn.Conv2d(cin, base, 3, padding=1)
 
         self.cross_attn1 = CrossAttention(base, code_channels, num_heads=1)
@@ -133,9 +132,8 @@ class LatentUNet(nn.Module):
 
     def forward(self, z_t, z_q, t_int):
         """
-        z_t, z_q: (B, C, H, W) where C = code_channels
+        z_t, z_q: noisy code and conditioning code (B, C, H, W)
         t_int: (B,) integer timesteps
-        returns predicted noise eps (same shape as z_t)
         """
         t_emb = self.t_embed(t_int)
         x = torch.cat([z_t, z_q], dim=1)
@@ -159,8 +157,18 @@ class LatentUNet(nn.Module):
         return x
 
 class LatentDiffusion(nn.Module):
-    def __init__(self, code_channels: int, num_filter: int, T: int, time_dim: int, temp: int=4, s = 0.008):
+    def __init__(self, code_channels: int, num_filter: int, T: int, time_dim: int, time_emb_dim: int):
+        """
+        code_channels: Code depth
+        num_filter: Filter dimension for diffusion model
+        T: The number of time step
+        time_dim: The dimension to represent the timestep
+        time_emb_dim: The dimension to embed the time condition
+        """
         super().__init__()
+        self.T = T
+        self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim, temp=temp)
+
         """
         Cosine scheduling
         Linear scheduling can be applied with the following
@@ -169,103 +177,60 @@ class LatentDiffusion(nn.Module):
         ```
         """
         steps = torch.arange(T + 1, dtype=torch.float32) / T
-        alpha_bar = torch.cos((steps + s) / (1 + s) * math.pi / 2) ** 2
+        alpha_bar = torch.cos((steps + 0.008) / (1 + 0.008) * math.pi / 2) ** 2
         alpha_bar = alpha_bar / alpha_bar[0]
         betas = 1 - alpha_bar[1:] / alpha_bar[:-1]
         betas = torch.clip(betas, 0.0001, 0.9999)
-
         alphas = 1.0 - betas
         alpha_bars = torch.cumprod(alphas, dim=0)
+
+        # Make the vector to move/store with model
         self.register_buffer('betas', betas)
         self.register_buffer('alphas', alphas)
         self.register_buffer('alpha_bars', alpha_bars)
-        self.T = T
-        self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim, temp=temp)
 
-    def q_sample(self, z0, t, noise): # Forward
-        # t is a (B,) tensor of indices
-        a_bar = self.alpha_bars[t].to(z0.device).view(-1, 1, 1, 1)
-        return (a_bar.sqrt() * z0) + ((1 - a_bar).sqrt() * noise)
-
-    def p_losses(self, z0, z_q, t): # Training
+    def p_losses(self, z0, z_q, t): # Training to predict velocity
         noise = torch.randn_like(z0)
-        z_t = self.q_sample(z0, t, noise)
-
-        v_pred = self.unet(z_t, z_q, t) # v = sqrt(alpha)*noise - sqrt(1-alpha)*z0
-
         alpha_bar = self.alpha_bars[t].view(-1, 1, 1, 1)
-        v_target = (alpha_bar.sqrt() * noise) - ((1-alpha_bar).sqrt() * z0)
+
+        z_t = a_bar.sqrt()*z0 + (1-a_bar).sqrt()*noise
+        v_pred = self.unet(z_t, z_q, t)
+        v_target = alpha_bar.sqrt()*noise - (1-alpha_bar).sqrt()*z0
 
         return F.mse_loss(v_pred, v_target)
 
     @torch.no_grad()
-    def ddim_sample(self, z_q, steps: int, eta: float = 0.5):#0.0):
-        """
-        DDIM sampling conditioned on z_q. Returns a denoised latent z_hat.
-        Works with arbitrary spatial sizes because Up uses stored output_size.
-        """
-        T = self.T
-        step_indices = torch.linspace(0, T - 1, steps, device=z_q.device).long().flip(0)
+    def ddim_sample(self, z_q, steps: int):
+        step_indices = torch.linspace(-1, self.T - 1, steps, device=z_q.device).long().flip(0)
         x = torch.randn_like(z_q)
-        for i in range(len(step_indices) - 1):
+        for i in range(len(step_indices)-1):
             t = step_indices[i].item()
             t_prev = step_indices[i + 1].item()
             t_batch = torch.full((z_q.shape[0],), t, device=z_q.device, dtype=torch.long)
-            alpha_bar_t = self.alpha_bars[t].to(z_q.device)
-            alpha_bar_prev = self.alpha_bars[t_prev].to(z_q.device)
+            alpha_bar_t = self.alpha_bars[t]
+            alpha_bar_prev = self.alpha_bars[t_prev]
 
+            # eta = 0 to fix result
             v_pred = self.unet(x, z_q, t_batch)
-            noise_pred = (alpha_bar_t.sqrt()*v_pred + (1-alpha_bar_t).sqrt()*x)# / (1 - alpha_bar_t + 1e-8)
+            noise_pred = alpha_bar_t.sqrt()*v_pred + (1-alpha_bar_t).sqrt()*x
             x0 = (x - (1-alpha_bar_t).sqrt() * noise_pred) / (alpha_bar_t.sqrt() + 1e-8)
-            # DDIM update (using derived noise_pred)
-            sigma = eta * ((1-alpha_bar_prev)/(1-alpha_bar_t+1e-8) * (1 - alpha_bar_t/alpha_bar_prev) + 1e-8).sqrt()
-            dir_coeff = (1 - alpha_bar_prev - sigma**2).clamp(min=0.0).sqrt()
-            rand_noise = torch.randn_like(x) if sigma > 0 else torch.zeros_like(x)
-            x = alpha_bar_prev.sqrt() * x0 + dir_coeff * noise_pred + sigma * rand_noise
-
-        # final step to t=0
-        t0 = torch.zeros((z_q.shape[0],), device=z_q.device, dtype=torch.long)
-        v_pred = self.unet(x, z_q, t0)
-        alpha_bar_0 = self.alpha_bars[0]
-        #noise_pred = (alpha_bar_0.sqrt() * v_pred + (1-alpha_bar_0).sqrt() * x) / (1 - alpha_bar_0 + 1e-8)
-        noise_pred = alpha_bar_0.sqrt() * v_pred + (1-alpha_bar_0).sqrt() * x
-        x0 = (x - (1-alpha_bar_0).sqrt() * noise_pred) / (alpha_bar_0.sqrt() + 1e-8)
+            x = alpha_bar_prev.sqrt()*x0 + (1-alpha_bar_prev).sqrt()*noise_pred 
         return x0
         
-# -----------------------
-# Uniform quantizer with STE
-# -----------------------
-#"""
 class Quantizer(nn.Module):
-    def __init__(self, num_bits=8, learn_range=False):
+    def __init__(self, num_bits=8):
         super().__init__()
-        self.levels = 2 ** num_bits
-
-        if learn_range:
-            # Learnable global scaling (safer for stability)
-            self.register_parameter("scale", nn.Parameter(torch.tensor(0.004)))
-        else:
-            self.scale = None
+        level = 2 ** num_bits
+        self.step = 2.0 / (level-1)
 
     def forward(self, x):
-        # Use learnable global range if available, else per-batch dynamic range
-        if self.scale is not None:
-            scale = torch.abs(self.scale) + 1e-8
-        else:
-            max_val = x.detach().abs().max()
-            scale = max_val + 1e-8
+        # Normalization
+        scale = x.detach().abs().max()
+        x_norm = x / scale
 
-        x_norm = x / scale # Normalize to [-1, 1]
-
-        # Quantize to discrete levels in [-1, 1]
-        x_q = torch.clamp(x_norm, -1, 1)
-        step = 2.0 / (self.levels - 1)
-        x_q = torch.round(x_q / step) * step
-
-        # Rescale back
-        x_hat = x_q * scale
-
-        return x_hat
+        x_q = torch.round(x_norm / self.step) * self.step
+        x_q = x_q * scale
+        return x_q
 
 class EMA:
     def __init__(self, model: nn.Module, decay: float = 0.999):
@@ -273,7 +238,7 @@ class EMA:
         self.decay = decay
         self.shadow_params = [p.clone().detach() for p in model.parameters()]
         self.temp_params = [p.clone().detach() for p in model.parameters()]
-        self.model = model # the model in reference
+        self.model = model
 
     def update(self):
         with torch.no_grad():

@@ -23,12 +23,12 @@ ALL_SUBJECT = False # inter- or intra-subject
 ALL_KFOLD = False
 
 TRAIN_AE = True
-TRAIN_DIFFUSION = True # With AE frozen
+TRAIN_DIFFUSION = False # With AE frozen
 TRAIN_LSTM = False
 EVAL_TRAIN = True
 EVAL_AE = True
 EVAL_QUANT = True
-EVAL_DIFFUSION = True
+EVAL_DIFFUSION = False
 EVAL_LSTM = False
 PRINT_TRAIN = True
 PLOT_METRIC = False
@@ -44,19 +44,18 @@ BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4
 LEARNING_RATE_D = 2e-4
-WEIGHT_DECAY = 0# 1e-5
 
-TIME_EMB_DIM = int(sys.argv[2])#128 # The dimension to represent the timesteps in cosine scheduling
-NUM_POOLING = 1#int(sys.argv[2])
-NUM_FILTER = 1#int(sys.argv[3])
-NUM_FILTER_D = int(sys.argv[3])#128 # The number of filter in the unet of diffusion model
+TIME_DIM = 192 # The dimension to represent the timesteps
+TIME_EMB_DIM = 1024 # The dimension to embed the time step for condition
+NUM_POOLING = 1 # The number of pooling layer within encoder (mirrored by unpool in decoder)
+NUM_FILTER = 1 # Code depth
+NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
 DIFFUSION_INF_STEPS = int(sys.argv[5])#50        # DDIM steps at inference
 DIFFUSION_TRAIN_STEPS = int(sys.argv[4])#1500
 TEMP = int(sys.argv[6])
 QUANT_BIT = 6
 
-random.seed(141)
-np.random.seed(141)
+RANDOM_SEED = 141
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 WINDOW_SIZE = 100
@@ -69,16 +68,18 @@ quantizer = Quantizer(num_bits=QUANT_BIT, learn_range=False)
 # --------------------------
 
 def process_one_fold(train_idx, val_idx, test_idx, fold):
-    torch.manual_seed(fold)
+    fix_seed(RANDOM_SEED)
+    generator = torch.Generator()
+    generator.manual_seed(RANDOM_SEED)
     model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
 
     # Training
     dual_print(f"Fold:{fold} training")
-    train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True, generator=generator)
+    val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     #model_path = f"model/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model/all_{NUM_POOLING}_fold{fold}.pth"
-    #model_path = f"model/main_fold{fold}.pth" if NUM_POOLING == 1 else f"model/main_{NUM_POOLING}_fold{fold}.pth"
-    model_path = f"model/vcae_fold{fold}.pth" if NUM_POOLING == 1 else f"model/vcae_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"model/main_fold{fold}.pth" if NUM_POOLING == 1 else f"model/main_{NUM_POOLING}_fold{fold}.pth"
+    #model_path = f"model/vcae_fold{fold}.pth" if NUM_POOLING == 1 else f"model/vcae_{NUM_POOLING}_fold{fold}.pth"
     #model_path = f"model/trans_fold{fold}.pth" if NUM_POOLING == 1 else f"model/trans_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN_AE:
         model_state = training(model, train_loader, val_loader)
@@ -94,12 +95,19 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     for p in model.parameters():
         p.requires_grad = False
 
-    latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_EMB_DIM, temp=TEMP).to(DEVICE)
-    ema = EMA(latent_diffusion.unet, decay=0.99)
-    lstm = LSTMRefiner(NUM_FILTER*64, 128, 2).to(DEVICE)
+    if TRAIN_DIFFUSION or EVAL_DIFFUSION:
+        latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_DIM, t_embed_dim=TIME_EMB_DIM).to(DEVICE)
+        ema = EMA(latent_diffusion.unet, decay=0.99)
+    else:
+        latent_diffusion = None
+        ema = None
+    if TRAIN_LSTM or EVAL_LSTM:
+        lstm = LSTMRefiner(NUM_FILTER*64, 128, 2).to(DEVICE)
+    else:
+        lstm = None
     latent_dataset = LatentDataset(model, dataset, DEVICE, (quantizer if (QUANT_BIT > 0) else None), SUBJECT_LIST, dataset.subject_len)
-    train_loader_d = DataLoader(Subset(latent_dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True)
-    val_loader_d = DataLoader(Subset(latent_dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False)
+    train_loader_d = DataLoader(Subset(latent_dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True, generator=generator)
+    val_loader_d = DataLoader(Subset(latent_dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
 
     if TRAIN_DIFFUSION:
         model_state = train_diffusion(model, latent_diffusion, ema, train_loader_d, val_loader_d, fold)
@@ -113,7 +121,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
         torch.save(model_state, f"model/lstm_latent_fold{fold}.pth")
         lstm.load_state_dict(model_state)
         lstm.eval()
-    else:
+    elif EVAL_DIFFUSION:
         model_state = torch.load(f"model/diffusion_latent_fold{fold}.pth")
         latent_diffusion.load_state_dict(model_state['unet'])
         ema.shadow_params = [p for p in model_state['ema_shadow']]
@@ -121,8 +129,8 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
         latent_diffusion.eval()
 
     # Evaluation
-    ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=False)
-    test_loader = DataLoader(Subset(dataset, test_idx), batch_size=BATCH_SIZE, shuffle=False)
+    ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
+    test_loader = DataLoader(Subset(dataset, test_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     if EVAL_AE:
         if EVAL_TRAIN:
             evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, quantize=False, use_diffusion=False, use_lstm=False, name=f"{NAME}_ae_train_{fold}")
@@ -142,7 +150,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
 
 def training(model, train_loader, val_loader):
     criterion = CRITERION
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     best_val_loss = float('inf')
@@ -213,8 +221,7 @@ def training(model, train_loader, val_loader):
 def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold: int):
     global quantizer
 
-    optimizer = optim.Adam(latent_diffusion.parameters(), lr=LEARNING_RATE_D, weight_decay=WEIGHT_DECAY)
-    #optimizer = optim.Adam(list(latent_diffusion.parameters()) + list(quantizer.parameters()), lr=LEARNING_RATE_D, weight_decay=WEIGHT_DECAY)
+    optimizer = optim.Adam(latent_diffusion.parameters(), lr=LEARNING_RATE_D)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=10)
 
     best_val_loss = float('inf')
@@ -281,7 +288,7 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
         }
 
 def train_lstm(model, lstm, train_loader, val_loader, fold):
-    optimizer = optim.Adam(lstm.parameters(), lr=LEARNING_RATE_D, weight_decay=WEIGHT_DECAY)  # Or include quantizer if joint
+    optimizer = optim.Adam(lstm.parameters(), lr=LEARNING_RATE_D)  # Or include quantizer if joint
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=15)
     criterion = nn.MSELoss()  # Reconstruction loss
 
@@ -465,12 +472,27 @@ def decode_from_code(model, z, req_grad=False):
     else:
         return model.decode(z)
 
+def fix_seed(seed):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
 if __name__ == '__main__':
     if len(sys.argv) <= 1:
         print("Usage: python3 training.py testing_name")
         exit(1)
 
     for fold in range(1, KFOLDS+1):
+        if fold==1:
+            continue
         if fold==3 and not ALL_KFOLD:
             break
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
