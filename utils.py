@@ -72,3 +72,38 @@ def cal_sisdr(ref: torch.Tensor, est: torch.Tensor):
     )  # [B,C]
 
     return sdr
+
+# Calculate the loss for VCAE model
+def cal_loss(x, recon, mu, logvar, beta):
+    MSE = F.mse_loss(recon, x, reduction="mean")
+    KL = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+    return MSE + beta * KL
+
+def get_code(model, x):
+    # x: (B, 1, 100, 128)
+    model.eval()
+    with torch.no_grad():
+        if model.model_type == "VCAE":
+            _, mu, _ = model.encode(x)
+            return mu
+        else:
+            return model.encode(x)
+
+def decode_from_code(model, z):
+    # x: (B, 1, T_z, C_z)
+    model.eval()
+    with torch.no_grad():
+        return model.decode(z)
+
+def fix_seed(seed):
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False

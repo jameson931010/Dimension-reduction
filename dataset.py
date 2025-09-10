@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 
 REPETITION = 10 # Repetition of each gesture
 SAMPLE_LEN = 1000 # The number of sample points within a .mat file
+BIT_RESOLUTION = 16
 
 class EMG128Dataset(Dataset):
     def __init__(self, dataset_dir: str, window_size=100, subject_list=list(range(1, 19)), first_n_gesture=8):

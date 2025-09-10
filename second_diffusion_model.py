@@ -59,8 +59,8 @@ class ResBlock(nn.Module):
         self.act = nn.SiLU()
     def forward(self, x, t_emb):
         gamma, beta = self.emb(t_emb)[:, :, None, None].chunk(2, dim=1)
-        norm = self.norm1(x)
-        h = gamma * norm + beta # FiLM
+        h = self.norm1(x)
+        h = gamma * h + beta # FiLM
         h = self.conv1(self.act(h))
         h = self.conv2(self.act(self.norm2(h)))
         return x + h
@@ -93,7 +93,6 @@ class Up(nn.Module):
         self.block1 = ResBlock(cin, tdim)
         self.proj_nopad = nn.ConvTranspose2d(cin, cout, kernel_size=2, stride=2)
         self.proj_pad = nn.ConvTranspose2d(cin, cout, kernel_size=2, stride=2, output_padding=[1, 0])
-        self.proj = nn.Conv2d(cin, cout, 1)
         self.block2 = ResBlock(cout, tdim)
 
     def forward(self, x, t, pad_time):
@@ -103,14 +102,16 @@ class Up(nn.Module):
         return x
 
 class LatentUNet(nn.Module):
-    def __init__(self, code_channels: int, base: int, time_dim: int, t_embed_dim: int):
+    def __init__(self, code_channels: int, base: int, time_dim: int, t_embed_dim: int, model_type):
         """
         code_channels: Code depth
         base: The (base) filter dimension for diffusion model
         time_dim: The dimension to represent timesteps
         time_embed_dim: The dimension to embed the time condition
+        model_type: either "DECODER" or "REFINER"
         """
         super().__init__()
+        self.model_type = model_type
         self.t_embed = TimestepEmbedding(time_dim, t_embed_dim)
         cin = code_channels * 2  # concatenated noisy z_t and quantized z_q
         self.in_conv = nn.Conv2d(cin, base, 3, padding=1)
@@ -118,6 +119,12 @@ class LatentUNet(nn.Module):
         self.cross_attn1 = CrossAttention(base, code_channels, num_heads=1)
         self.cross_attn2 = CrossAttention(base*2, code_channels, num_heads=1)
         self.cross_attn_mid = CrossAttention(base*4, code_channels, num_heads=4)
+
+        # Upsample cond latent to match its original dimension, be careful for output padding if more than 2 pooling layer was passed
+        self.cond_upsample = nn.Sequential(
+            nn.ConvTranspose2d(code_channels, code_channels, kernel_size=4, stride=2, padding=1),
+            #nn.ConvTranspose2d(code_channels, code_channels, kernel_size=4, stride=2, padding=1),
+        )
 
         self.d1 = Down(base, base*2, t_embed_dim)
         self.d2 = Down(base*2, base*4, t_embed_dim)
@@ -136,6 +143,8 @@ class LatentUNet(nn.Module):
         t_int: (B,) integer timesteps
         """
         t_emb = self.t_embed(t_int)
+        if self.model_type == "REFINER":
+            z_q = self.conv_upsample(z_q)
         x = torch.cat([z_t, z_q], dim=1)
         x = self.act(self.in_conv(x))
 
@@ -167,6 +176,7 @@ class LatentDiffusion(nn.Module):
         """
         super().__init__()
         self.T = T
+        self.model_type = "DECODER" # change to "REFINER" for latent diffusion
         self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim, temp=temp)
 
         """
@@ -202,7 +212,10 @@ class LatentDiffusion(nn.Module):
     @torch.no_grad()
     def ddim_sample(self, z_q, steps: int):
         step_indices = torch.linspace(-1, self.T - 1, steps, device=z_q.device).long().flip(0)
-        x = torch.randn_like(z_q)
+        if self.model_type = "DECODER":
+            x =  torch.randn(z_q.shape[0], 1, signal_shape[0], signal_shape[1])
+        else:
+            x = torch.randn_like(z_q)
         for i in range(len(step_indices)-1):
             t = step_indices[i].item()
             t_prev = step_indices[i + 1].item()
