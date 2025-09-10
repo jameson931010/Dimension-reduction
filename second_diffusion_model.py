@@ -102,7 +102,7 @@ class Up(nn.Module):
         return x
 
 class LatentUNet(nn.Module):
-    def __init__(self, code_channels: int, base: int, time_dim: int, t_embed_dim: int, model_type):
+    def __init__(self, code_channels: int, base: int, time_dim: int, time_emb_dim: int, model_type):
         """
         code_channels: Code depth
         base: The (base) filter dimension for diffusion model
@@ -112,7 +112,7 @@ class LatentUNet(nn.Module):
         """
         super().__init__()
         self.model_type = model_type
-        self.t_embed = TimestepEmbedding(time_dim, t_embed_dim)
+        self.t_embed = TimestepEmbedding(time_dim, time_emb_dim)
         cin = code_channels * 2  # concatenated noisy z_t and quantized z_q
         self.in_conv = nn.Conv2d(cin, base, 3, padding=1)
 
@@ -126,13 +126,13 @@ class LatentUNet(nn.Module):
             #nn.ConvTranspose2d(code_channels, code_channels, kernel_size=4, stride=2, padding=1),
         )
 
-        self.d1 = Down(base, base*2, t_embed_dim)
-        self.d2 = Down(base*2, base*4, t_embed_dim)
+        self.d1 = Down(base, base*2, time_emb_dim)
+        self.d2 = Down(base*2, base*4, time_emb_dim)
 
-        self.mid = ResBlock(base*4, t_embed_dim)
+        self.mid = ResBlock(base*4, time_emb_dim)
 
-        self.u2 = Up(base*4, base*2, t_embed_dim)
-        self.u1 = Up(base*2, base, t_embed_dim)
+        self.u2 = Up(base*4, base*2, time_emb_dim)
+        self.u1 = Up(base*2, base, time_emb_dim)
 
         self.out_conv = nn.Conv2d(base, code_channels, 3, padding=1)
         self.act = nn.SiLU()
@@ -143,8 +143,8 @@ class LatentUNet(nn.Module):
         t_int: (B,) integer timesteps
         """
         t_emb = self.t_embed(t_int)
-        if self.model_type == "REFINER":
-            z_q = self.conv_upsample(z_q)
+        if self.model_type == "DECODER":
+            z_q = self.cond_upsample(z_q)
         x = torch.cat([z_t, z_q], dim=1)
         x = self.act(self.in_conv(x))
 
@@ -177,7 +177,7 @@ class LatentDiffusion(nn.Module):
         super().__init__()
         self.T = T
         self.model_type = "DECODER" # change to "REFINER" for latent diffusion
-        self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim, temp=temp)
+        self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim, time_emb_dim=time_emb_dim, model_type=self.model_type)
 
         """
         Cosine scheduling
@@ -203,17 +203,17 @@ class LatentDiffusion(nn.Module):
         noise = torch.randn_like(z0)
         alpha_bar = self.alpha_bars[t].view(-1, 1, 1, 1)
 
-        z_t = a_bar.sqrt()*z0 + (1-a_bar).sqrt()*noise
+        z_t = alpha_bar.sqrt()*z0 + (1-alpha_bar).sqrt()*noise
         v_pred = self.unet(z_t, z_q, t)
         v_target = alpha_bar.sqrt()*noise - (1-alpha_bar).sqrt()*z0
 
         return F.mse_loss(v_pred, v_target)
 
     @torch.no_grad()
-    def ddim_sample(self, z_q, steps: int):
+    def ddim_sample(self, z_q, steps: int, signal_shape=(100, 128)):
         step_indices = torch.linspace(-1, self.T - 1, steps, device=z_q.device).long().flip(0)
-        if self.model_type = "DECODER":
-            x =  torch.randn(z_q.shape[0], 1, signal_shape[0], signal_shape[1])
+        if self.model_type == "DECODER":
+            x =  torch.randn(z_q.shape[0], 1, signal_shape[0], signal_shape[1]).to(z_q.device)
         else:
             x = torch.randn_like(z_q)
         for i in range(len(step_indices)-1):

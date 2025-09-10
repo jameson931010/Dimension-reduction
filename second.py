@@ -98,7 +98,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
         p.requires_grad = False
 
     if TRAIN_DIFFUSION or EVAL_DIFFUSION:
-        latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_DIM, t_embed_dim=TIME_EMB_DIM).to(DEVICE)
+        latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_DIM, time_emb_dim=TIME_EMB_DIM).to(DEVICE)
         ema = EMA(latent_diffusion.unet, decay=0.99)
     else:
         latent_diffusion = None
@@ -239,7 +239,7 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
         for code, z_q, z_clean in pbar:
             code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
             t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-            if latent_diffusion.model_type == 'DECODER'
+            if latent_diffusion.model_type == 'DECODER':
                 loss = latent_diffusion.p_losses(z_clean, z_q, t)
             else:
                 loss = latent_diffusion.p_losses(code, z_q, t)
@@ -260,7 +260,7 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
             for code, z_q, z_clean in val_loader:
                 code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
                 t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-                if latent_diffusion.model_type == 'DECODER'
+                if latent_diffusion.model_type == 'DECODER':
                     val_loss += latent_diffusion.p_losses(z_clean, z_q, t).item()
                 else:
                     val_loss += latent_diffusion.p_losses(code, z_q, t).item()
