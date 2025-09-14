@@ -21,25 +21,25 @@ from lstm import LSTMRefiner
 PAPER_SETTING = False
 EARLY_STOPPING = True
 ALL_SUBJECT = True # inter- or intra-subject
-ALL_KFOLD = True
+ALL_KFOLD = False
 
-TRAIN_AE = True
-TRAIN_DIFFUSION = True # With AE frozen
+TRAIN_AE = False
+TRAIN_DIFFUSION = False # With AE frozen
 TRAIN_LSTM = False
 EVAL_TRAIN = True
-EVAL_AE = True
-EVAL_QUANT = True
+EVAL_AE = False
+EVAL_QUANT = False
 EVAL_DIFFUSION = True
 EVAL_LSTM = False
 PRINT_TRAIN = True
-PLOT_METRIC = True
+PLOT_METRIC = False
 
 KFOLDS = 18 if ALL_SUBJECT else 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation, only used for intra-subject
 EPOCHS = 20 if PAPER_SETTING else 1600
 EPOCHS_D = 1600
-PATIENCE = 40
-BATCH_SIZE = 128 if PAPER_SETTING else 10
+PATIENCE = 20
+BATCH_SIZE = 128 if PAPER_SETTING else 24
 BETA = 1
 BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
@@ -47,13 +47,13 @@ LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4
 LEARNING_RATE_D = 2e-4
 
 TIME_DIM = 192 # The dimension to represent the timesteps
-TIME_EMB_DIM = 1024 # The dimension to embed the time step for condition
+TIME_EMB_DIM = 256 # The dimension to embed the time step for condition
 NUM_POOLING = 1 # The number of pooling layer within encoder (mirrored by unpool in decoder)
 NUM_FILTER = 1 # Code depth
 NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
 DIFFUSION_INF_STEPS = 50 # DDIM steps at inference
-DIFFUSION_TRAIN_STEPS = 1500 # DDIM time steps
-QUANT_BIT = 6
+DIFFUSION_TRAIN_STEPS = 2500 # DDIM time steps
+QUANT_BIT = 4
 
 RANDOM_SEED = 141
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,7 +62,7 @@ WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]#[int(sys.argv[4])]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}-{LEARNING_RATE_D}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
-RESULT_DIR = "result"
+RESULT_DIR = "trained_result"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 quantizer = Quantizer(num_bits=QUANT_BIT)
 
@@ -82,7 +82,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True, generator=generator)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
-    model_path = f"model/CAE_fold{fold}.pth" if NUM_POOLING == 1 else f"model/CAE_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"model2/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model2/all_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN_AE:
         model_state = training(model, train_loader, val_loader)
         torch.save(model_state, model_path)
@@ -116,7 +116,6 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
         torch.save(model_state, f"model/diffusion_latent_fold{fold}.pth")
         latent_diffusion.load_state_dict(model_state['unet'])
         ema.shadow_params = [p for p in model_state['ema_shadow']]
-        quantizer.load_state_dict(model_state['quantizer'])
         latent_diffusion.eval()
     elif TRAIN_LSTM:
         model_state = train_lstm(model, lstm, train_loader_d, val_loader_d, fold)
@@ -127,7 +126,6 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
         model_state = torch.load(f"model/diffusion_latent_fold{fold}.pth")
         latent_diffusion.load_state_dict(model_state['unet'])
         ema.shadow_params = [p for p in model_state['ema_shadow']]
-        quantizer.load_state_dict(model_state['quantizer'])
         latent_diffusion.eval()
     elif EVAL_LSTM:
         model_state = torch.load(f"model/lstm_latent_fold{fold}.pth")
@@ -138,22 +136,24 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     # Evaluation
     ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     test_loader = DataLoader(Subset(dataset, test_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
+    latent_ordered_train_loader = DataLoader(Subset(latent_dataset, train_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
+    latent_test_loader = DataLoader(Subset(latent_dataset, test_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     if EVAL_AE:
         if EVAL_TRAIN:
-            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, quantize=False, use_diffusion=False, use_lstm=False, name=f"{NAME}_ae_train_{fold}")
-        evaluation(model, latent_diffusion, lstm, ema, test_loader, quantize=False, use_diffusion=False, use_lstm=False, name=f"{NAME}_ae_test_{fold}")
-    if EVAL_QUANT:
+            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, latent_ordered_train_loader, quantize=False, use_diffusion=False, use_lstm=False, name=f"{NAME}_ae_train_{fold}")
+        evaluation(model, latent_diffusion, lstm, ema, test_loader, latent_test_loader, quantize=False, use_diffusion=False, use_lstm=False, name=f"{NAME}_ae_test_{fold}")
+    if EVAL_QUANT and QUANT_BIT > 0:
         if EVAL_TRAIN:
-            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, quantize=True, use_diffusion=False, use_lstm=False, name=f"{NAME}_quant_train_{fold}")
-        evaluation(model, latent_diffusion, lstm, ema, test_loader, quantize=True, use_diffusion=False, use_lstm=False, name=f"{NAME}_quant_test_{fold}")
+            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, latent_ordered_train_loader, quantize=True, use_diffusion=False, use_lstm=False, name=f"{NAME}_quant_train_{fold}")
+        evaluation(model, latent_diffusion, lstm, ema, test_loader, latent_test_loader, quantize=True, use_diffusion=False, use_lstm=False, name=f"{NAME}_quant_test_{fold}")
     if EVAL_DIFFUSION:
         if EVAL_TRAIN:
-            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, quantize=True, use_diffusion=True, use_lstm=False, name=f"{NAME}_diffusion_train_{fold}")
-        evaluation(model, latent_diffusion, lstm, ema, test_loader, quantize=True, use_diffusion=True, use_lstm=False, name=f"{NAME}_diffusion_test_{fold}")
+            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, latent_ordered_train_loader, quantize=True, use_diffusion=True, use_lstm=False, name=f"{NAME}_diffusion_train_{fold}")
+        evaluation(model, latent_diffusion, lstm, ema, test_loader, latent_test_loader, quantize=True, use_diffusion=True, use_lstm=False, name=f"{NAME}_diffusion_test_{fold}")
     if EVAL_LSTM:
         if EVAL_TRAIN:
-            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, quantize=True, use_diffusion=False, use_lstm=True, name=f"{NAME}_lstm_train_{fold}")
-        evaluation(model, latent_diffusion, lstm, ema, test_loader, quantize=True, use_diffusion=False, use_lstm=True, name=f"{NAME}_lstm_test_{fold}")
+            evaluation(model, latent_diffusion, lstm, ema, ordered_train_loader, latent_ordered_train_loader, quantize=True, use_diffusion=False, use_lstm=True, name=f"{NAME}_lstm_train_{fold}")
+        evaluation(model, latent_diffusion, lstm, ema, test_loader, latent_test_loader, quantize=True, use_diffusion=False, use_lstm=True, name=f"{NAME}_lstm_test_{fold}")
 
 def training(model, train_loader, val_loader):
     criterion = CRITERION
@@ -277,7 +277,6 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
                 best_model_state = {
                     'unet': latent_diffusion.state_dict(),
                     'ema_shadow': ema.shadow_params,
-                    'quantizer': quantizer.state_dict()
                 }
                 no_improve_epochs = 0
             else:
@@ -293,7 +292,6 @@ def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold
         return {
             'unet': latent_diffusion.state_dict(),
             'ema_shadow': ema.shadow_params,
-            'quantizer': quantizer.state_dict()
         }
 
 def train_lstm(model, lstm, train_loader, val_loader, fold):
@@ -351,7 +349,7 @@ def train_lstm(model, lstm, train_loader, val_loader, fold):
     else:
         return lstm.state_dict()
 
-def evaluation(model, latent_diffusion, lstm, ema, data_loader, name, quantize: bool, use_diffusion: bool, use_lstm: bool, plot=True):
+def evaluation(model, latent_diffusion, lstm, ema, data_loader, latent_data_loader, name, quantize: bool, use_diffusion: bool, use_lstm: bool, plot=True):
     dual_print(f"Evaluating {name}")
     model.eval()
     def _recon_with_selected_model(model, x): # x: (B, 1, 100, 128)
@@ -362,23 +360,13 @@ def evaluation(model, latent_diffusion, lstm, ema, data_loader, name, quantize: 
                 else: #CAE
                     return model(x)
             elif use_diffusion:
-                latent_diffusion.eval()
-                z_q = get_code(model, x)
-                if QUANT_BIT > 0:
-                    z_q = quantizer(z_q)
-                ema.copy_to_model()
-                z_hat = latent_diffusion.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
-                ema.restore_model()
+                z_hat = latent_diffusion.ddim_sample(x, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
                 if latent_diffusion.model_type == "DECODER":
                     return z_hat
                 else:
                     return decode_from_code(model, z_hat)
             elif use_lstm:
-                lstm.eval()
-                z_q = get_code(model, x)
-                if QUANT_BIT > 0:
-                    z_q = quantizer(z_q)
-                z_hat = lstm(z_q)
+                z_hat = lstm(x)
                 return decode_from_code(model, z_hat)
             else: # pure quantize
                 z = get_code(model, x)
@@ -393,32 +381,54 @@ def evaluation(model, latent_diffusion, lstm, ema, data_loader, name, quantize: 
         else: # CAE
             code_size = model.encode(batch)[0].numel()
 
-        CR = INPUT_TIME_DIM * INPUT_CHANNEL_DIM / code_size * BIT_RESOLUTION / QUANT_BIT
+        if use_diffusion:
+            latent_diffusion.eval()
+            ema.copy_to_model()
+        if use_lstm:
+            lstm.eval()
+        CR = INPUT_TIME_DIM * INPUT_CHANNEL_DIM / code_size * ((BIT_RESOLUTION/QUANT_BIT) if (QUANT_BIT>0) else 1)
         if plot:
             original = batch[0].squeeze().cpu().numpy()
-            reconstructed = _recon_with_selected_model(model, batch[0].unsqueeze(0)).squeeze().cpu().numpy()
+            x = batch[0].unsqueeze(0)
+            if use_diffusion or use_lstm:
+                x = get_code(model, x)
+                if QUANT_BIT > 0:
+                    x = quantizer(x)
+            reconstructed = _recon_with_selected_model(model, x).squeeze().cpu().numpy()
             prd = 100 * np.sqrt(np.sum((original - reconstructed) ** 2) / np.sum(original ** 2))
             dual_print(f"PRD for sample: {prd:.3f}")
             plot_channel(original, reconstructed, name)
             plot_heatmap(original, reconstructed, name)
 
+        MSE = np.empty(len(data_loader))
         PRDN = np.empty(len(data_loader))
         SNR = np.empty(len(data_loader))
         SSIM = np.empty(len(data_loader))
         SISDR = np.empty(len(data_loader))
         QS = np.empty(len(data_loader))
         cnt = 0
-        for batch in data_loader:
+        if use_diffusion or use_lstm:
+            pbar = tqdm(latent_data_loader, desc=f"Evaluation")
+        else:
+            pbar = tqdm(data_loader, desc=f"Evaluation")
+        for batch in pbar:
+            if use_diffusion or use_lstm:
+                _, batch, clean = batch
+            else:
+                batch, clean = batch, batch
+            clean = clean.to(DEVICE)
             batch = batch.to(DEVICE)  # shape: (B, 1, 100, 128)
             recon = _recon_with_selected_model(model, batch)
-            SE = torch.sum((batch-recon) ** 2)
-            SS = torch.sum(batch ** 2)
+            SE = torch.sum((clean-recon) ** 2)
+            SS = torch.sum(clean ** 2)
             # The following assume mean=0
+            mse = SE.item() / (clean.shape[0]*clean.shape[2]*clean.shape[3])
             prdn = torch.sqrt(SE/SS).item() * 100
             snr = 10 * (torch.log(SS/SE).item() if PAPER_SETTING else torch.log10(SS/SE).item())
-            ssim = cal_ssim(recon, batch).mean().item()
-            sisdr = cal_sisdr(recon, batch).mean().item()
+            ssim = cal_ssim(recon, clean).mean().item()
+            sisdr = cal_sisdr(recon, clean).mean().item()
             qs = CR / prdn
+            MSE[cnt] = mse
             PRDN[cnt] = prdn
             SNR[cnt] = snr
             SSIM[cnt] = ssim
@@ -426,7 +436,10 @@ def evaluation(model, latent_diffusion, lstm, ema, data_loader, name, quantize: 
             QS[cnt] = qs
             cnt += 1
 
+        if use_diffusion:
+            ema.restore_model()
         dual_print(f"   CR: {CR:.2f}")
+        dual_print(f"   MSE: {MSE.mean():.2f}")
         dual_print(f"   PRDN: {PRDN.mean():.3f}")
         dual_print(f"   SNR: {SNR.mean():.3f}")
         dual_print(f"   SSIM: {SSIM.mean():.3f}")
@@ -434,13 +447,14 @@ def evaluation(model, latent_diffusion, lstm, ema, data_loader, name, quantize: 
         dual_print(f"   QS: {QS.mean():.3f}")
         if PLOT_METRIC:
             if len(SUBJECT_LIST) == 1:
+                plot_metric(MSE.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"MSE_{name}")
                 plot_metric(PRDN.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"PRDN_{name}")
                 plot_metric(SNR.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SNR_{name}")
                 plot_metric(SSIM.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SSIM_{name}")
                 plot_metric(SISDR.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SISDR_{name}")
                 plot_metric(QS.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"QS_{name}")
             else:
-                plot_metric(PRDN.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"PRDN_{name}")
+                plot_metric(MSE.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"MSE_{name}")
                 plot_metric(SNR.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SNR_{name}")
                 plot_metric(SSIM.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SSIM{name}")
                 plot_metric(SISDR.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SISDR_{name}")
@@ -457,8 +471,8 @@ if __name__ == '__main__':
     Path(RESULT_DIR).mkdir(exist_ok=True)
 
     for fold in range(1, KFOLDS+1):
-        if fold==3 and not ALL_KFOLD:
-            break
+        if not fold==10 and not ALL_KFOLD:
+            continue
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"\nFold {fold}/{KFOLDS}\n")
         
