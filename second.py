@@ -10,7 +10,7 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
+from quant_cae import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN, BIT_RESOLUTION
 from plot import plot_channel, plot_heatmap, plot_metric
 from utils import *
@@ -21,15 +21,15 @@ from lstm import LSTMRefiner
 PAPER_SETTING = False
 EARLY_STOPPING = True
 ALL_SUBJECT = True # inter- or intra-subject
-ALL_KFOLD = False
+ALL_KFOLD = True
 
-TRAIN_AE = False
+TRAIN_AE = True
 TRAIN_DIFFUSION = False # With AE frozen
 TRAIN_LSTM = False
 EVAL_TRAIN = True
-EVAL_AE = False
-EVAL_QUANT = False
-EVAL_DIFFUSION = True
+EVAL_AE = True
+EVAL_QUANT = True
+EVAL_DIFFUSION = False
 EVAL_LSTM = False
 PRINT_TRAIN = True
 PLOT_METRIC = False
@@ -38,8 +38,8 @@ KFOLDS = 18 if ALL_SUBJECT else 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation, only used for intra-subject
 EPOCHS = 20 if PAPER_SETTING else 1600
 EPOCHS_D = 1600
-PATIENCE = 20
-BATCH_SIZE = 128 if PAPER_SETTING else 24
+PATIENCE = 40
+BATCH_SIZE = 128 if PAPER_SETTING else 10
 BETA = 1
 BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
@@ -48,7 +48,7 @@ LEARNING_RATE_D = 2e-4
 
 TIME_DIM = 192 # The dimension to represent the timesteps
 TIME_EMB_DIM = 256 # The dimension to embed the time step for condition
-NUM_POOLING = 1 # The number of pooling layer within encoder (mirrored by unpool in decoder)
+NUM_POOLING = 2 # The number of pooling layer within encoder (mirrored by unpool in decoder)
 NUM_FILTER = 1 # Code depth
 NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
 DIFFUSION_INF_STEPS = 50 # DDIM steps at inference
@@ -62,7 +62,7 @@ WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]#[int(sys.argv[4])]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}-{LEARNING_RATE_D}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
-RESULT_DIR = "trained_result"
+RESULT_DIR = "cae_result"
 dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 quantizer = Quantizer(num_bits=QUANT_BIT)
 
