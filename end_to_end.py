@@ -15,7 +15,7 @@ from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN, BIT_RE
 from plot import plot_channel, plot_heatmap, plot_metric
 from utils import *
 from second_diffusion_model import LatentDiffusion, Quantizer, EMA
-from lstm import LSTMRefiner
+from refiner import LSTMRefiner, GRURefiner, TransformerRefiner#, MambaRefiner
 
 # --------- Config ---------
 PAPER_SETTING = False
@@ -26,6 +26,9 @@ ALL_KFOLD = True
 TRAIN_AE = True
 TRAIN_DIFFUSION = False # With AE frozen
 TRAIN_LSTM = False
+TRAIN_GRU = True
+TRAIN_TRANSFORMER = False
+TRAIN_MAMBA = False
 EVAL_TRAIN = True
 EVAL_AE = True
 EVAL_QUANT = True
@@ -80,10 +83,16 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     generator.manual_seed(RANDOM_SEED)
     model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
     if TRAIN_LSTM:
-        refiner = LSTMRefiner(NUM_FILTER*64, 128, 2).to(DEVICE)
+        refiner = LSTMRefiner(NUM_FILTER * (128//(2**NUM_POOLING)), 128, 2).to(DEVICE)
     elif TRAIN_DIFFUSION:
         latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_DIM, time_emb_dim=TIME_EMB_DIM).to(DEVICE)
         ema = EMA(latent_diffusion.unet, decay=0.99)
+    elif TRAIN_GRU:
+        refiner = GRURefiner(NUM_FILTER * (128//(2**NUM_POOLING)), 128, 2).to(DEVICE)
+    elif TRAIN_TRANSFORMER:
+        refiner = TransformerRefiner(NUM_FILTER* (128 // (2**NUM_POOLING)), num_layers=2, num_heads=4).to(DEVICE)
+    elif TRAIN_MAMBA:
+        refiner = MambaRefiner(NUM_FILTER * (128 // (2**NUM_POOLING))).to(DEVICE)
 
 
     # Training
