@@ -118,6 +118,12 @@ class EMG128CAE(nn.Module):
         x_q = x_q * scale
         return x_q + x - x.detach() # STE
 
+    def get_code(self, x):
+        h = x
+        code = self.encode(h)
+        z_q = self.quant(code)
+        return out
+
     def forward(self, x):
         h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]
         code = self.encode(h)
