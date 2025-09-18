@@ -13,13 +13,16 @@ class EMG128VCAE(nn.Module):
     POOL_S = 2 # Stride for up-/down-sampling
     NUM_GROUP = 4 # The number of group for group normalization
 
-    def __init__(self, num_pooling = 3, num_filter = 4, num_conv = 2):
+    def __init__(self, num_pooling = 3, num_filter = 4, num_conv = 2, quant_bit = 4):
         """
         num_pooling: The number of pooling layer in encoder (mirrored by unpool in decoder)
         num_filter: Code depth (channels of final encoder conv)        
         num_conv: The number of convolution layer before each pooling
         """
         super().__init__()
+        # Quantization
+        level = 2 ** quant_bit
+        self.step = 2.0 / (level-1)
         
         # Encoder
         convs, pools, add_padding = [], [], []
@@ -108,6 +111,21 @@ class EMG128VCAE(nn.Module):
             h = conv(h)
         h = self.reconstruct(h)
         return h
+
+    def quant(self, x):
+        # Normalization
+        scale = x.detach().abs().max()
+        x_norm = x / scale
+
+        x_q = torch.round(x_norm / self.step) * self.step
+        x_q = x_q * scale
+        return x_q + x - x.detach() # STE
+
+    def get_code(self, x):
+        h = x
+        code, _, _ = self.encode(h)
+        z_q = self.quant(code)
+        return z_q
 
     def forward(self, x):
         h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]

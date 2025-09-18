@@ -122,7 +122,7 @@ class EMG128CAE(nn.Module):
         h = x
         code = self.encode(h)
         z_q = self.quant(code)
-        return out
+        return z_q
 
     def forward(self, x):
         h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]

@@ -92,35 +92,33 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     model_path = f"model2/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model2/all_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN_AE:
-        model_state = training(model, train_loader, val_loader)
+        model_state = training(model, refiner, train_loader, val_loader)
         torch.save(model_state, model_path)
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Model saved for {fold} fold\n")
     else:
         model_state = torch.load(model_path)
-        if TRAIN_DIFFUSION:
-            refiner_state = torch.load(f"model/diffusion_latent_fold{fold}.pth")
-            #latent_diffusion.load_state_dict(model_state['unet'])
-            #ema.shadow_params = [p for p in model_state['ema_shadow']]
-        elif TRAIN_LSTM:
-            refiner_state = torch.load(f"model/lstm_latent_fold{fold}.pth")
-    model.load_state_dict(model_state)
-    refiner.load_state_dict(model_state)
+    model.load_state_dict(model_state['model'])
+    refiner.load_state_dict(model_state['refiner'])
 
     # Freeze model
     model.eval()
-    refiner.eval()
+    if refiner:
+        refiner.eval()
 
     # Evaluation
     ordered_train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     test_loader = DataLoader(Subset(dataset, test_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     if EVAL_TRAIN:
-        evaluation(model, refiner, order_train_loader, name=f"{NAME}_train_{fold}")
+        evaluation(model, refiner, ordered_train_loader, name=f"{NAME}_train_{fold}")
     evaluation(model, refiner, test_loader, name=f"{NAME}_test_{fold}")
 
-def training(model, refiner, train_loader, val_loader, refine: bool):
+def training(model, refiner, train_loader, val_loader):
     criterion = CRITERION
-    optimizer = optim.Adam(list(model.parameters())+list(refiner.parameters()), lr=LEARNING_RATE)
+    if refiner:
+        optimizer = optim.Adam(list(model.parameters())+list(refiner.parameters()), lr=LEARNING_RATE)
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     best_val_loss = float('inf')
     best_model_state = None
@@ -129,7 +127,8 @@ def training(model, refiner, train_loader, val_loader, refine: bool):
     for epoch in range(1, EPOCHS+1):
         # Training
         model.train()
-        refiner.train()
+        if refiner:
+            refiner.train()
         train_loss = 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS}, training")
 
@@ -139,21 +138,25 @@ def training(model, refiner, train_loader, val_loader, refine: bool):
             if model.model_type == "VCAE":
                 code, mu, logvar = model.encode(batch)
                 z_q = model.quant(code)
-                z_ref = refiner(z_q)
+                z_ref = refiner(z_q) if refiner else z_q
                 outputs = model.decode(z_ref)
                 beta = min(BETA, epoch / BETA_WARM_UP * BETA)
                 recon_loss = cal_loss(batch, outputs, mu, logvar, beta)
                 aux_loss = criterion(z_ref, code)
             else: # CAE
-                code = model.get_code(batch)
-                z_ref = refiner(z_q)
+                code = model.encode(batch)
+                z_q = model.quant(code)
+                z_ref = refiner(z_q) if refiner else z_q
                 outputs = model.decode(z_ref)
                 recon_loss = criterion(outputs, batch)
-                aux_loss = criterion(z_ref, code)
+                aux_loss = criterion(code, z_ref)
 
             loss = recon_loss + LAMBDA * aux_loss
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(refiner.parameters()), 1.0)
+            if refiner:
+                torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(refiner.parameters()), 1.0)
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
             train_loss += loss.item()
@@ -168,13 +171,13 @@ def training(model, refiner, train_loader, val_loader, refine: bool):
                 if model.model_type == "VCAE":
                     code, mu, logvar = model(batch)
                     z_q = model.quant(code)
-                    z_ref = refiner(z_q)
+                    z_ref = refiner(z_q) if refiner else z_q
                     outputs = model.decode(z_ref)
                     beta = min(BETA, epoch / BETA_WARM_UP * BETA)
                     loss = cal_loss(batch, outputs, mu, logvar, beta)
                 else: # CAE
-                    code = model.get_code(batch)
-                    z_ref = refiner(z_q)
+                    z_q = model.get_code(batch)
+                    z_ref = refiner(z_q) if refiner else z_q
                     outputs = model.decode(z_ref)
                     loss = criterion(outputs, batch)
                 val_loss += loss.item()
@@ -188,7 +191,7 @@ def training(model, refiner, train_loader, val_loader, refine: bool):
                 best_val_loss = val_loss
                 best_model_state = {
                     'model': model.state_dict(),
-                    'refiner': refiner.state_dict()
+                    'refiner': refiner.state_dict() if refiner else None
                 }
                 no_improve_epochs = 0
             else:
@@ -203,7 +206,7 @@ def training(model, refiner, train_loader, val_loader, refine: bool):
     else:
         return {
             'model': model.state_dict(),
-            'refiner': refiner.state_dict()
+            'refiner': refiner.state_dict() if refiner else None
         }
 
 def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold: int):
@@ -335,12 +338,17 @@ def train_lstm(model, lstm, train_loader, val_loader, fold):
 def evaluation(model, refiner, data_loader, name, plot=True):
     dual_print(f"Evaluating {name}")
     model.eval()
-    refiner.eval()
+    if refiner:
+        refiner.eval()
     def _recon(model, refiner, x): # x: (B, 1, 100, 128)
         with torch.no_grad():
             z_q = model.get_code(x)
-            z_ref = refiner(x)
-            out = model.decode(x)
+            if refiner:
+                z_ref = refiner(z_q)
+            else:
+                z_ref = z_q
+            out = model.decode(z_ref)
+        return out
 
     with torch.no_grad():
         batch = next(iter(data_loader)).to(DEVICE)
@@ -354,7 +362,7 @@ def evaluation(model, refiner, data_loader, name, plot=True):
         if plot:
             original = batch[0].squeeze().cpu().numpy()
             x = batch[0].unsqueeze(0)
-            reconstructed = _recon(model, x).squeeze().cpu().numpy()
+            reconstructed = _recon(model, refiner, x).squeeze().cpu().numpy()
             prd = 100 * np.sqrt(np.sum((original - reconstructed) ** 2) / np.sum(original ** 2))
             dual_print(f"PRD for sample: {prd:.3f}")
             plot_channel(original, reconstructed, name)
@@ -371,7 +379,7 @@ def evaluation(model, refiner, data_loader, name, plot=True):
         pbar = tqdm(data_loader, desc=f"Evaluation")
         for batch in pbar:
             clean = batch.to(DEVICE)  # shape: (B, 1, 100, 128)
-            recon = _recon(model, clean)
+            recon = _recon(model, refiner, clean)
             SE = torch.sum((clean-recon) ** 2)
             SS = torch.sum(clean ** 2)
             # The following assume mean=0
@@ -389,8 +397,6 @@ def evaluation(model, refiner, data_loader, name, plot=True):
             QS[cnt] = qs
             cnt += 1
 
-        if use_diffusion:
-            ema.restore_model()
         dual_print(f"   CR: {CR:.2f}")
         dual_print(f"   MSE: {MSE.mean():.2f}")
         dual_print(f"   PRDN: {PRDN.mean():.3f}")
