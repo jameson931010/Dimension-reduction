@@ -15,25 +15,18 @@ from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN, BIT_RE
 from plot import plot_channel, plot_heatmap, plot_metric
 from utils import *
 from second_diffusion_model import LatentDiffusion, Quantizer, EMA
-from refiner import LSTMRefiner, GRURefiner, TransformerRefiner#, MambaRefiner
+from refiner import LSTMRefiner, GRURefiner, TransformerRefiner, MambaRefiner
 
 # --------- Config ---------
 PAPER_SETTING = False
 EARLY_STOPPING = True
 ALL_SUBJECT = True # inter- or intra-subject
-ALL_KFOLD = True
+ALL_KFOLD = False
 
-TRAIN_AE = True
+TRAIN = True
 TRAIN_DIFFUSION = False # With AE frozen
-TRAIN_LSTM = False
-TRAIN_GRU = True
-TRAIN_TRANSFORMER = False
-TRAIN_MAMBA = False
+REFINER = Refiner.TRANSFORMER
 EVAL_TRAIN = True
-EVAL_AE = True
-EVAL_QUANT = True
-EVAL_DIFFUSION = False
-EVAL_LSTM = False
 PRINT_TRAIN = True
 PLOT_METRIC = False
 
@@ -47,18 +40,26 @@ BETA = 1
 BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4
-LEARNING_RATE_D = 2e-4
-LAMBDA = 0.5
+LEARNING_RATE_D = 1e-3#2e-4#float(sys.argv[2])#2e-4
+LAMBDA = 0.1
 PRETRAIN_EPOCHS = 20
 
 TIME_DIM = 192 # The dimension to represent the timesteps
 TIME_EMB_DIM = 256 # The dimension to embed the time step for condition
-NUM_POOLING = 2 # The number of pooling layer within encoder (mirrored by unpool in decoder)
+NUM_POOLING = 1 # The number of pooling layer within encoder (mirrored by unpool in decoder)
 NUM_FILTER = 1 # Code depth
 NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
-DIFFUSION_INF_STEPS = 50 # DDIM steps at inference
-DIFFUSION_TRAIN_STEPS = 2500 # DDIM time steps
+DIFFUSION_INF_STEPS = 25#50 # DDIM steps at inference
+DIFFUSION_TRAIN_STEPS = 1500#2500 # DDIM time steps
 QUANT_BIT = 4
+
+LSTM_DIM = 128
+LSTM_LAYER = 1
+GRU_DIM = 64
+GRU_LAYER = 1
+TRANS_DIM = 4096#2048
+TRANS_LAYER = 2
+TRANS_HEAD = 8
 
 RANDOM_SEED = 141
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -67,8 +68,8 @@ WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]#[int(sys.argv[4])]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}-{LEARNING_RATE_D}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
-RESULT_DIR = "cae_result"
-dataset = EMG128Dataset(dataset_dir="/tmp2/b12902141/DR/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
+RESULT_DIR = "result2"
+dataset = EMG128Dataset(dataset_dir="../Dimension-reduction/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 quantizer = Quantizer(num_bits=QUANT_BIT)
 
 def dual_print(mes):
@@ -82,25 +83,25 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     generator = torch.Generator()
     generator.manual_seed(RANDOM_SEED)
     model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
-    if TRAIN_LSTM:
-        refiner = LSTMRefiner(NUM_FILTER * (128//(2**NUM_POOLING)), 128, 2).to(DEVICE)
-    elif TRAIN_DIFFUSION:
-        latent_diffusion = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_DIM, time_emb_dim=TIME_EMB_DIM).to(DEVICE)
-        ema = EMA(latent_diffusion.unet, decay=0.99)
-    elif TRAIN_GRU:
-        refiner = GRURefiner(NUM_FILTER * (128//(2**NUM_POOLING)), 128, 2).to(DEVICE)
-    elif TRAIN_TRANSFORMER:
-        refiner = TransformerRefiner(NUM_FILTER* (128 // (2**NUM_POOLING)), num_layers=2, num_heads=4).to(DEVICE)
-    elif TRAIN_MAMBA:
-        refiner = MambaRefiner(NUM_FILTER * (128 // (2**NUM_POOLING))).to(DEVICE)
-
+    match REFINER:
+        case Refiner.LSTM:
+            refiner = LSTMRefiner(NUM_FILTER * (128//(2**NUM_POOLING)), LSTM_DIM, LSTM_LAYER).to(DEVICE)
+        case Refiner.GRU:
+            refiner = GRURefiner(NUM_FILTER * (128//(2**NUM_POOLING)), GRU_DIM, GRU_LAYER).to(DEVICE)
+        case Refiner.DIFFUSION:
+            refiner = LatentDiffusion(code_channels=NUM_FILTER, num_filter=NUM_FILTER_D, T=DIFFUSION_TRAIN_STEPS, time_dim=TIME_DIM, time_emb_dim=TIME_EMB_DIM).to(DEVICE)
+            ema = EMA(refiner.unet, decay=0.99)
+        case Refiner.TRANSFORMER:
+            refiner = TransformerRefiner(NUM_FILTER* (128 // (2**NUM_POOLING)), TRANS_LAYER, TRANS_HEAD, TRANS_DIM).to(DEVICE)
+        case Refiner.MAMBA:
+            refiner = MambaRefiner(NUM_FILTER * (128 // (2**NUM_POOLING)), 256, 2).to(DEVICE)
 
     # Training
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True, generator=generator)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
     model_path = f"model2/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model2/all_{NUM_POOLING}_fold{fold}.pth"
-    if TRAIN_AE:
+    if TRAIN:
         model_state = training(model, refiner, train_loader, val_loader)
         torch.save(model_state, model_path)
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
@@ -128,6 +129,7 @@ def training(model, refiner, train_loader, val_loader):
         optimizer = optim.Adam(list(model.parameters())+list(refiner.parameters()), lr=LEARNING_RATE)
     else:
         optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=10)
 
     best_val_loss = float('inf')
     best_model_state = None
@@ -147,7 +149,12 @@ def training(model, refiner, train_loader, val_loader):
             if model.model_type == "VCAE":
                 code, mu, logvar = model.encode(batch)
                 z_q = model.quant(code)
-                z_ref = refiner(z_q) if refiner else z_q
+                if REFINER == Refiner.DIFFUSION:
+                    t = torch.randint(0, refiner.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
+                    loss = refiner.p_losses(code, z_q, t)
+                    z_ref = refiner.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
+                else:
+                    z_ref = refiner(z_q) if refiner else z_q
                 outputs = model.decode(z_ref)
                 beta = min(BETA, epoch / BETA_WARM_UP * BETA)
                 recon_loss = cal_loss(batch, outputs, mu, logvar, beta)
@@ -155,7 +162,12 @@ def training(model, refiner, train_loader, val_loader):
             else: # CAE
                 code = model.encode(batch)
                 z_q = model.quant(code)
-                z_ref = refiner(z_q) if refiner else z_q
+                if REFINER == Refiner.DIFFUSION:
+                    t = torch.randint(0, refiner.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
+                    loss = refiner.p_losses(code, z_q, t)
+                    z_ref = refiner.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
+                else:
+                    z_ref = refiner(z_q) if refiner else z_q
                 outputs = model.decode(z_ref)
                 recon_loss = criterion(outputs, batch)
                 aux_loss = criterion(code, z_ref)
@@ -178,19 +190,31 @@ def training(model, refiner, train_loader, val_loader):
             for batch in val_loader:
                 batch = batch.to(DEVICE)
                 if model.model_type == "VCAE":
-                    code, mu, logvar = model(batch)
+                    code, mu, logvar = model.encode(batch)
                     z_q = model.quant(code)
-                    z_ref = refiner(z_q) if refiner else z_q
+                    if REFINER == Refiner.DIFFUSION:
+                        t = torch.randint(0, refiner.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
+                        loss = refiner.p_losses(code, z_q, t)
+                        z_ref = refiner.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
+                    else:
+                        z_ref = refiner(z_q) if refiner else z_q
                     outputs = model.decode(z_ref)
                     beta = min(BETA, epoch / BETA_WARM_UP * BETA)
                     loss = cal_loss(batch, outputs, mu, logvar, beta)
                 else: # CAE
-                    z_q = model.get_code(batch)
-                    z_ref = refiner(z_q) if refiner else z_q
+                    code = model.encode(batch)
+                    z_q = model.quant(code)
+                    if REFINER == Refiner.DIFFUSION:
+                        t = torch.randint(0, refiner.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
+                        loss = refiner.p_losses(code, z_q, t)
+                        z_ref = refiner.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
+                    else:
+                        z_ref = refiner(z_q) if refiner else z_q
                     outputs = model.decode(z_ref)
                     loss = criterion(outputs, batch)
                 val_loss += loss.item()
 
+        scheduler.step(val_loss/len(val_loader))
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Epoch [{epoch}/{EPOCHS}], Training Loss: {train_loss/len(train_loader):.6f}, Validation Loss: {val_loss/len(val_loader):.6f}\n")
 
@@ -218,132 +242,6 @@ def training(model, refiner, train_loader, val_loader):
             'refiner': refiner.state_dict() if refiner else None
         }
 
-def train_diffusion(model, latent_diffusion, ema, train_loader, val_loader, fold: int):
-    global quantizer
-    optimizer = optim.Adam(latent_diffusion.parameters(), lr=LEARNING_RATE_D)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=10)
-
-    best_val_loss = float('inf')
-    best_model_state = None
-    no_improve_epochs = 0
-
-    for epoch in range(1, EPOCHS_D + 1):
-        latent_diffusion.train()
-        running = 0.0
-        pbar = tqdm(train_loader, desc=f"Diffusion Epoch {epoch}/{EPOCHS_D}")
-        for code, z_q, z_clean in pbar:
-            code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
-            t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-            if latent_diffusion.model_type == 'DECODER':
-                loss = latent_diffusion.p_losses(z_clean, z_q, t)
-            else:
-                loss = latent_diffusion.p_losses(code, z_q, t)
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(latent_diffusion.parameters(), 1.0)
-            optimizer.step()
-            ema.update()
-
-            running += loss.item()
-            pbar.set_postfix(loss=loss.item())
-        
-        # Validation
-        latent_diffusion.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            ema.copy_to_model()
-            for code, z_q, z_clean in val_loader:
-                code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
-                t = torch.randint(0, latent_diffusion.T, (BATCH_SIZE,), device=DEVICE, dtype=torch.long)
-                if latent_diffusion.model_type == 'DECODER':
-                    val_loss += latent_diffusion.p_losses(z_clean, z_q, t).item()
-                else:
-                    val_loss += latent_diffusion.p_losses(code, z_q, t).item()
-            ema.restore_model()
-
-        scheduler.step(val_loss/len(val_loader))
-        with open(f"log/{sys.argv[1]}.log", 'a') as f:
-            f.write(f"[Diffusion] Epoch {epoch}, Training Loss: {running/len(train_loader):.6f}, Validation Loss: {val_loss/len(val_loader):.6f}\n")
-
-        # Early stopping
-        if EARLY_STOPPING:
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_model_state = {
-                    'unet': latent_diffusion.state_dict(),
-                    'ema_shadow': ema.shadow_params,
-                }
-                no_improve_epochs = 0
-            else:
-                no_improve_epochs += 1
-                if no_improve_epochs >= PATIENCE:
-                    with open(f"log/{sys.argv[1]}.log", 'a') as f:
-                        f.write(f"Early stopping at epoch {epoch}\n")
-                    break
-
-    if EARLY_STOPPING:
-        return best_model_state
-    else:
-        return {
-            'unet': latent_diffusion.state_dict(),
-            'ema_shadow': ema.shadow_params,
-        }
-
-def train_lstm(model, lstm, train_loader, val_loader, fold):
-    optimizer = optim.Adam(lstm.parameters(), lr=LEARNING_RATE_D)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=15)
-    criterion = nn.MSELoss()
-
-    best_val_loss = float('inf')
-    best_model_state = None
-    no_improve_epochs = 0
-
-    for epoch in range(1, EPOCHS_D + 1):
-        lstm.train()
-        running = 0.0
-        pbar = tqdm(train_loader, desc=f"LSTM Epoch {epoch}/{EPOCHS_D}")
-        for code, z_q, z_clean in pbar:
-            code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
-            optimizer.zero_grad()
-            z_ref = lstm(z_q)
-            loss = criterion(z_ref, code)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(lstm.parameters(), 1.0)
-            optimizer.step()
-
-            running += loss.item()
-            pbar.set_postfix(loss=loss.item())
-
-        # Validation
-        lstm.eval()
-        val_running = 0.0
-        with torch.no_grad():
-            for code, z_q, z_clean in val_loader:
-                code, z_q, z_clean = code.to(DEVICE), z_q.to(DEVICE), z_clean.to(DEVICE)
-                z_ref = lstm(z_q)
-                val_loss = criterion(z_ref, code)
-                val_running += val_loss.item()
-        val_loss_avg = val_running / len(val_loader)
-        scheduler.step(val_loss_avg)
-
-        # Early stopping
-        with open(f"log/{sys.argv[1]}.log", 'a') as f:
-            f.write(f"[LSTM] Epoch {epoch} train_loss: {running/len(train_loader):.6f}, val_loss: {val_loss_avg:.6f}\n")
-
-        if EARLY_STOPPING:
-            if val_loss_avg < best_val_loss:
-                best_val_loss = val_loss_avg
-                best_model_state = lstm.state_dict()
-                no_improve_epochs = 0
-            else:
-                no_improve_epochs += 1
-                if no_improve_epochs >= PATIENCE:
-                    break
-    if EARLY_STOPPING:
-        return best_model_state
-    else:
-        return lstm.state_dict()
-
 def evaluation(model, refiner, data_loader, name, plot=True):
     dual_print(f"Evaluating {name}")
     model.eval()
@@ -353,7 +251,10 @@ def evaluation(model, refiner, data_loader, name, plot=True):
         with torch.no_grad():
             z_q = model.get_code(x)
             if refiner:
-                z_ref = refiner(z_q)
+                if REFINER == Refiner.DIFFUSION:
+                    z_ref = refiner.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
+                else:
+                    z_ref = refiner(z_q)
             else:
                 z_ref = z_q
             out = model.decode(z_ref)
@@ -439,7 +340,7 @@ if __name__ == '__main__':
     Path(RESULT_DIR).mkdir(exist_ok=True)
 
     for fold in range(1, KFOLDS+1):
-        if not fold==10 and not ALL_KFOLD:
+        if fold not in [1, 10] and not ALL_KFOLD:
             continue
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
             f.write(f"\nFold {fold}/{KFOLDS}\n")

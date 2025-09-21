@@ -1,9 +1,17 @@
 import os
 import random
 import math
+import enum
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+class Refiner(enum.Enum):
+    LSTM=0
+    GRU=1
+    DIFFUSION=2
+    TRANSFORMER=3
+    MAMBA=4
 
 def _gaussian_kernel(window_size: int, sigma: float, device, channels: int):
     """Create a [channels,1,w,w] Gaussian kernel for grouped conv2d."""

@@ -176,7 +176,7 @@ class LatentDiffusion(nn.Module):
         """
         super().__init__()
         self.T = T
-        self.model_type = "DECODER" # change to "REFINER" for latent diffusion
+        self.model_type = "REFINER" # can be change to "DECODER"
         self.unet = LatentUNet(code_channels=code_channels, base=num_filter, time_dim=time_dim, time_emb_dim=time_emb_dim, model_type=self.model_type)
 
         """

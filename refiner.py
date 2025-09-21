@@ -52,13 +52,13 @@ class TransformerRefiner(nn.Module):
         out = self.transformer(z_seq)  # (B, T_z, feature_dim)
         out = self.fc(out)
         return out.view(b, t, c, ch).permute(0, 2, 1, 3)
-"""
+#"""
 from mamba_ssm import Mamba  # Assume you pip install mamba-ssm or copy impl
 
 class MambaRefiner(nn.Module):
     def __init__(self, feature_dim: int, hidden_dim=128, num_layers=2):
         super().__init__()
-        self.layers = nn.ModuleList([Mamba(d_model=feature_dim, d_state=hidden_dim, d_conv=4, expand=2) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([Mamba(d_model=feature_dim, d_state=hidden_dim, d_conv=3, expand=2) for _ in range(num_layers)])
         self.fc = nn.Linear(feature_dim, feature_dim)
 
     def forward(self, z_q: torch.Tensor):
@@ -68,4 +68,4 @@ class MambaRefiner(nn.Module):
             z_seq = layer(z_seq)
         out = self.fc(z_seq)
         return out.view(b, t, c, ch).permute(0, 2, 1, 3)
-"""
+#"""
