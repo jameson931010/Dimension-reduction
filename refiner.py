@@ -56,9 +56,9 @@ class TransformerRefiner(nn.Module):
 from mamba_ssm import Mamba  # Assume you pip install mamba-ssm or copy impl
 
 class MambaRefiner(nn.Module):
-    def __init__(self, feature_dim: int, hidden_dim=128, num_layers=2):
+    def __init__(self, feature_dim: int, hidden_dim=128, num_layers=1):
         super().__init__()
-        self.layers = nn.ModuleList([Mamba(d_model=feature_dim, d_state=hidden_dim, d_conv=3, expand=2) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([Mamba(d_model=feature_dim, d_state=hidden_dim, d_conv=4, expand=2) for _ in range(num_layers)])
         self.fc = nn.Linear(feature_dim, feature_dim)
 
     def forward(self, z_q: torch.Tensor):

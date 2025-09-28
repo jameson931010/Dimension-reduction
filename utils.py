@@ -12,6 +12,7 @@ class Refiner(enum.Enum):
     DIFFUSION=2
     TRANSFORMER=3
     MAMBA=4
+    HYBRID=5
 
 def _gaussian_kernel(window_size: int, sigma: float, device, channels: int):
     """Create a [channels,1,w,w] Gaussian kernel for grouped conv2d."""

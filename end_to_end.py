@@ -16,16 +16,17 @@ from plot import plot_channel, plot_heatmap, plot_metric
 from utils import *
 from second_diffusion_model import LatentDiffusion, Quantizer, EMA
 from refiner import LSTMRefiner, GRURefiner, TransformerRefiner, MambaRefiner
+from hybrid import HybridMambaTransformerRefiner
 
 # --------- Config ---------
 PAPER_SETTING = False
 EARLY_STOPPING = True
 ALL_SUBJECT = True # inter- or intra-subject
-ALL_KFOLD = False
+ALL_KFOLD = True
 
 TRAIN = True
 TRAIN_DIFFUSION = False # With AE frozen
-REFINER = Refiner.TRANSFORMER
+REFINER = Refiner.LSTM
 EVAL_TRAIN = True
 PRINT_TRAIN = True
 PLOT_METRIC = False
@@ -40,13 +41,12 @@ BETA = 1
 BETA_WARM_UP = 30
 CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
 LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4
-LEARNING_RATE_D = 1e-3#2e-4#float(sys.argv[2])#2e-4
 LAMBDA = 0.1
 PRETRAIN_EPOCHS = 20
 
 TIME_DIM = 192 # The dimension to represent the timesteps
 TIME_EMB_DIM = 256 # The dimension to embed the time step for condition
-NUM_POOLING = 1 # The number of pooling layer within encoder (mirrored by unpool in decoder)
+NUM_POOLING = 2 # The number of pooling layer within encoder (mirrored by unpool in decoder)
 NUM_FILTER = 1 # Code depth
 NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
 DIFFUSION_INF_STEPS = 25#50 # DDIM steps at inference
@@ -57,8 +57,8 @@ LSTM_DIM = 128
 LSTM_LAYER = 1
 GRU_DIM = 64
 GRU_LAYER = 1
-TRANS_DIM = 4096#2048
-TRANS_LAYER = 2
+TRANS_DIM = 3072
+TRANS_LAYER = 2 # 2
 TRANS_HEAD = 8
 
 RANDOM_SEED = 141
@@ -67,8 +67,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]#[int(sys.argv[4])]
 FIRST_N_GESTURE = 8
-NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}-{LEARNING_RATE_D}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
-RESULT_DIR = "result2"
+NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
+RESULT_DIR = "refiner_result"
 dataset = EMG128Dataset(dataset_dir="../Dimension-reduction/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 quantizer = Quantizer(num_bits=QUANT_BIT)
 
@@ -94,13 +94,15 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
         case Refiner.TRANSFORMER:
             refiner = TransformerRefiner(NUM_FILTER* (128 // (2**NUM_POOLING)), TRANS_LAYER, TRANS_HEAD, TRANS_DIM).to(DEVICE)
         case Refiner.MAMBA:
-            refiner = MambaRefiner(NUM_FILTER * (128 // (2**NUM_POOLING)), 256, 2).to(DEVICE)
+            refiner = MambaRefiner(NUM_FILTER * (128 // (2**NUM_POOLING)), 128, 1).to(DEVICE)
+        case Refiner.HYBRID:
+            refiner = HybridMambaTransformerRefiner(feature_dim=NUM_FILTER * (INPUT_CHANNEL_DIM // (2**NUM_POOLING)), hidden_dim=128, num_layers=4, num_heads=8, d_state=32, d_conv=4).to(DEVICE)
 
     # Training
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True, generator=generator)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
-    model_path = f"model2/all_fold{fold}.pth" if NUM_POOLING == 1 else f"model2/all_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"model2/lstm_fold{fold}.pth" if NUM_POOLING == 1 else f"model2/lstm_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN:
         model_state = training(model, refiner, train_loader, val_loader)
         torch.save(model_state, model_path)
@@ -340,6 +342,8 @@ if __name__ == '__main__':
     Path(RESULT_DIR).mkdir(exist_ok=True)
 
     for fold in range(1, KFOLDS+1):
+        if fold < 10:
+            continue
         if fold not in [1, 10] and not ALL_KFOLD:
             continue
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
