@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
 from cae_model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
-from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN, BIT_RESOLUTION
+from dataset import EMG128Dataset, REPETITION, SAMPLE_LEN, BIT_RESOLUTION
 from plot import plot_channel, plot_heatmap
 from utils import *
 from diffusion_model import LatentDiffusion, EMA
