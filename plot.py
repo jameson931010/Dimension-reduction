@@ -26,14 +26,6 @@ def plot_heatmap(original, reconstructed, title):
     plt.savefig(f"visual/heatmap_{title}.png")
     plt.close()
 
-def plot_metric(data, xlabel, ylabel, title):
-    sns.heatmap(data, annot=True, cmap="YlGnBu", fmt=".2f")
-    plt.title(title, fontsize=16)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.savefig(f"visual/metric_{title}.png")
-    plt.close()
-
 def plot_channel(original, reconstructed, title):
     CHANNELS_TO_PLOT = [0, 1, 2, 6, 7, 8, 9, 10, 14, 15, 16, 17]
     plt.figure(figsize=(14, 2 * len(CHANNELS_TO_PLOT)))

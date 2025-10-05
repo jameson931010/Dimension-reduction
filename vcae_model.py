@@ -130,5 +130,6 @@ class EMG128VCAE(nn.Module):
     def forward(self, x):
         h = x  # To preserve the input, as ReLU is done in place; [B,1,100,128]
         code, mu, logvar = self.encode(h)
-        out = self.decode(code)
+        z_q = self.quant(code)
+        out = self.decode(z_q)
         return out, mu, logvar

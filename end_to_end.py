@@ -10,9 +10,9 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from quant_cae import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
+from vcae_model import EMG128VCAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN, BIT_RESOLUTION
-from plot import plot_channel, plot_heatmap, plot_metric
+from plot import plot_channel, plot_heatmap
 from utils import *
 from second_diffusion_model import LatentDiffusion, Quantizer, EMA
 from refiner import LSTMRefiner, GRURefiner, TransformerRefiner, MambaRefiner
@@ -21,15 +21,14 @@ from hybrid import HybridMambaTransformerRefiner
 # --------- Config ---------
 PAPER_SETTING = False
 EARLY_STOPPING = True
-ALL_SUBJECT = True # inter- or intra-subject
-ALL_KFOLD = True
+ALL_SUBJECT = False # inter- or intra-subject
+ALL_KFOLD = False
 
 TRAIN = True
 TRAIN_DIFFUSION = False # With AE frozen
-REFINER = Refiner.LSTM
+REFINER = None
 EVAL_TRAIN = True
 PRINT_TRAIN = True
-PLOT_METRIC = False
 
 KFOLDS = 18 if ALL_SUBJECT else 5 # KFold cross validation
 VAL_RATIO = 0.1 # 10% training data for validation, only used for intra-subject
@@ -46,7 +45,7 @@ PRETRAIN_EPOCHS = 20
 
 TIME_DIM = 192 # The dimension to represent the timesteps
 TIME_EMB_DIM = 256 # The dimension to embed the time step for condition
-NUM_POOLING = 2 # The number of pooling layer within encoder (mirrored by unpool in decoder)
+NUM_POOLING = 1 # The number of pooling layer within encoder (mirrored by unpool in decoder)
 NUM_FILTER = 1 # Code depth
 NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
 DIFFUSION_INF_STEPS = 25#50 # DDIM steps at inference
@@ -68,7 +67,7 @@ WINDOW_SIZE = 100
 SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]#[int(sys.argv[4])]
 FIRST_N_GESTURE = 8
 NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
-RESULT_DIR = "refiner_result"
+RESULT_DIR = "test"
 dataset = EMG128Dataset(dataset_dir="../Dimension-reduction/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
 quantizer = Quantizer(num_bits=QUANT_BIT)
 
@@ -82,7 +81,7 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     fix_seed(RANDOM_SEED)
     generator = torch.Generator()
     generator.manual_seed(RANDOM_SEED)
-    model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
+    model = EMG128VCAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
     match REFINER:
         case Refiner.LSTM:
             refiner = LSTMRefiner(NUM_FILTER * (128//(2**NUM_POOLING)), LSTM_DIM, LSTM_LAYER).to(DEVICE)
@@ -97,12 +96,14 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
             refiner = MambaRefiner(NUM_FILTER * (128 // (2**NUM_POOLING)), 128, 1).to(DEVICE)
         case Refiner.HYBRID:
             refiner = HybridMambaTransformerRefiner(feature_dim=NUM_FILTER * (INPUT_CHANNEL_DIM // (2**NUM_POOLING)), hidden_dim=128, num_layers=4, num_heads=8, d_state=32, d_conv=4).to(DEVICE)
+        case _:
+            refiner = None
 
     # Training
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True, generator=generator)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
-    model_path = f"model2/lstm_fold{fold}.pth" if NUM_POOLING == 1 else f"model2/lstm_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"model/lstm_fold{fold}.pth" if NUM_POOLING == 1 else f"model/lstm_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN:
         model_state = training(model, refiner, train_loader, val_loader)
         torch.save(model_state, model_path)
@@ -111,7 +112,8 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     else:
         model_state = torch.load(model_path)
     model.load_state_dict(model_state['model'])
-    refiner.load_state_dict(model_state['refiner'])
+    if refiner:
+        refiner.load_state_dict(model_state['refiner'])
 
     # Freeze model
     model.eval()
@@ -160,7 +162,7 @@ def training(model, refiner, train_loader, val_loader):
                 outputs = model.decode(z_ref)
                 beta = min(BETA, epoch / BETA_WARM_UP * BETA)
                 recon_loss = cal_loss(batch, outputs, mu, logvar, beta)
-                aux_loss = criterion(z_ref, code)
+                aux_loss = criterion(z_ref, code) if refiner else 0
             else: # CAE
                 code = model.encode(batch)
                 z_q = model.quant(code)
@@ -252,13 +254,10 @@ def evaluation(model, refiner, data_loader, name, plot=True):
     def _recon(model, refiner, x): # x: (B, 1, 100, 128)
         with torch.no_grad():
             z_q = model.get_code(x)
-            if refiner:
-                if REFINER == Refiner.DIFFUSION:
-                    z_ref = refiner.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
-                else:
-                    z_ref = refiner(z_q)
+            if REFINER == Refiner.DIFFUSION:
+                z_ref = refiner.ddim_sample(z_q, steps=DIFFUSION_INF_STEPS, signal_shape=(INPUT_TIME_DIM, INPUT_CHANNEL_DIM))
             else:
-                z_ref = z_q
+                z_ref = refiner(z_q) if refiner else z_q
             out = model.decode(z_ref)
         return out
 
@@ -316,21 +315,7 @@ def evaluation(model, refiner, data_loader, name, plot=True):
         dual_print(f"   SSIM: {SSIM.mean():.3f}")
         dual_print(f"   SI-SDR: {SISDR.mean():.3f}")
         dual_print(f"   QS: {QS.mean():.3f}")
-        if PLOT_METRIC:
-            if len(SUBJECT_LIST) == 1:
-                plot_metric(MSE.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"MSE_{name}")
-                plot_metric(PRDN.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"PRDN_{name}")
-                plot_metric(SNR.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SNR_{name}")
-                plot_metric(SSIM.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SSIM_{name}")
-                plot_metric(SISDR.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"SISDR_{name}")
-                plot_metric(QS.reshape(FIRST_N_GESTURE, -1), xlabel="repetition", ylabel="gesture", title=f"QS_{name}")
-            else:
-                plot_metric(MSE.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"MSE_{name}")
-                plot_metric(SNR.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SNR_{name}")
-                plot_metric(SSIM.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SSIM{name}")
-                plot_metric(SISDR.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"SISDR_{name}")
-                plot_metric(QS.reshape(len(SUBJECT_LIST), FIRST_N_GESTURE, -1).mean(axis=2), xlabel="gesture", ylabel="subject", title=f"QS_{name}")
-
+        
 if __name__ == '__main__':
     if len(sys.argv) <= 1:
         print("Usage: python3 training.py testing_name")
@@ -342,8 +327,6 @@ if __name__ == '__main__':
     Path(RESULT_DIR).mkdir(exist_ok=True)
 
     for fold in range(1, KFOLDS+1):
-        if fold < 10:
-            continue
         if fold not in [1, 10] and not ALL_KFOLD:
             continue
         with open(f"log/{sys.argv[1]}.log", 'a') as f:
