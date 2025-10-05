@@ -19,7 +19,9 @@
 
 # Usage
 1. Install the required package `pip install -r requirement.txt`
-2. Install the package for mamba properly, I use the one provided by https://github.com/khhungg/MECG-E/tree/main.
+2. Install the package for mamba properly, if there is system issue,
+    - try reinstall pytroch properly. https://pytorch.org/get-started/locally/
+    - try to install from the original implementation https://github.com/state-spaces/mamba/tree/main, or the package provided by https://github.com/khhungg/MECG-E/tree/main (this worked on iis server when I tried).
 3. In `main.py`
 	- Choose the refiner to use (hyperparameter of mamba and hybrid not optimized), and which subset of the data to train.
 	- Modify the path of model and the directory to store result.
