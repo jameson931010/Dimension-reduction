@@ -10,67 +10,73 @@ import torch.optim as optim
 import numpy as np
 from sklearn.model_selection import KFold
 from tqdm import tqdm
-from vcae_model import EMG128VCAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
+from cae_model import EMG128CAE, INPUT_TIME_DIM, INPUT_CHANNEL_DIM
 from dataset import EMG128Dataset, LatentDataset, REPETITION, SAMPLE_LEN, BIT_RESOLUTION
 from plot import plot_channel, plot_heatmap
 from utils import *
-from second_diffusion_model import LatentDiffusion, Quantizer, EMA
+from diffusion_model import LatentDiffusion, EMA
 from refiner import LSTMRefiner, GRURefiner, TransformerRefiner, MambaRefiner
 from hybrid import HybridMambaTransformerRefiner
 
 # --------- Config ---------
+TRAIN = True
+EVAL_TRAIN = True # Evaluate the result of training set
+PLOT_RESULT = True
+
 PAPER_SETTING = False
-EARLY_STOPPING = True
 ALL_SUBJECT = False # inter- or intra-subject
 ALL_KFOLD = False
-
-TRAIN = True
-TRAIN_DIFFUSION = False # With AE frozen
-REFINER = None
-EVAL_TRAIN = True
-PRINT_TRAIN = True
-
 KFOLDS = 18 if ALL_SUBJECT else 5 # KFold cross validation
+SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]
+WINDOW_SIZE = 100
+FIRST_N_GESTURE = 8
+dataset = EMG128Dataset(dataset_dir="../Dimension-reduction/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
+
+# Training details
+BATCH_SIZE = 128 if PAPER_SETTING else 10
 VAL_RATIO = 0.1 # 10% training data for validation, only used for intra-subject
 EPOCHS = 20 if PAPER_SETTING else 1600
-EPOCHS_D = 1600
 PATIENCE = 40
-BATCH_SIZE = 128 if PAPER_SETTING else 10
-BETA = 1
-BETA_WARM_UP = 30
-CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
-LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4
-LAMBDA = 0.1
-PRETRAIN_EPOCHS = 20
+EARLY_STOPPING = True
 
-TIME_DIM = 192 # The dimension to represent the timesteps
-TIME_EMB_DIM = 256 # The dimension to embed the time step for condition
+# Loss
+CRITERION = nn.MSELoss() # nn.L1Loss() nn.MSELoss(), nn.SmoothL1Loss()
+LEARNING_RATE = 1e-3 if PAPER_SETTING else 2e-4 # 5e-5 was used for GRU refiner
+LAMBDA = 0.1 # The weight of auxiliary loss
+
+# Model setting
 NUM_POOLING = 1 # The number of pooling layer within encoder (mirrored by unpool in decoder)
 NUM_FILTER = 1 # Code depth
-NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
-DIFFUSION_INF_STEPS = 25#50 # DDIM steps at inference
-DIFFUSION_TRAIN_STEPS = 1500#2500 # DDIM time steps
 QUANT_BIT = 4
 
+# For beta VCAE
+BETA = 1
+BETA_WARM_UP = 30
+
+# Refiner
+REFINER = Refiner.LSTM # None, or choose from Refiner
 LSTM_DIM = 128
 LSTM_LAYER = 1
 GRU_DIM = 64
 GRU_LAYER = 1
 TRANS_DIM = 3072
-TRANS_LAYER = 2 # 2
+TRANS_LAYER = 2
 TRANS_HEAD = 8
+# THe hyperparameter of mamba and hybrid refiner has not been tested
+TIME_DIM = 192 # The dimension to represent the timesteps
+TIME_EMB_DIM = 256 # The dimension to embed the time step for condition
+NUM_FILTER_D = 256 # The number of filter in the unet of diffusion model
+DIFFUSION_INF_STEPS = 50 # DDIM steps at inference
+DIFFUSION_TRAIN_STEPS = 2500 # DDIM time steps
 
 RANDOM_SEED = 141
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-WINDOW_SIZE = 100
-SUBJECT_LIST = [x for x in range(1, 19)] if ALL_SUBJECT else [1]#[int(sys.argv[4])]
-FIRST_N_GESTURE = 8
-NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}-{EPOCHS_D}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
+NAME = f"{sys.argv[1]}_{'all_' if ALL_SUBJECT else ''}{'paper_' if PAPER_SETTING else ''}lr{LEARNING_RATE}_dstep{DIFFUSION_INF_STEPS}-{DIFFUSION_TRAIN_STEPS}_e{EPOCHS}_qbit{QUANT_BIT}_{NUM_POOLING}_{NUM_FILTER}"
 RESULT_DIR = "test"
-dataset = EMG128Dataset(dataset_dir="../Dimension-reduction/CapgMyo-DB-a", window_size=WINDOW_SIZE, subject_list=SUBJECT_LIST, first_n_gesture=FIRST_N_GESTURE)
-quantizer = Quantizer(num_bits=QUANT_BIT)
-
+LOG_DIR = "log"
+MODEL_DIR = "model"
+PLOT_DIR = "visual"
 def dual_print(mes):
     print(mes)
     with open(f"{RESULT_DIR}/{NAME}.log", 'a') as f:
@@ -79,9 +85,9 @@ def dual_print(mes):
 
 def process_one_fold(train_idx, val_idx, test_idx, fold):
     fix_seed(RANDOM_SEED)
-    generator = torch.Generator()
+    generator = torch.Generator() # To fix random seed
     generator.manual_seed(RANDOM_SEED)
-    model = EMG128VCAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
+    model = EMG128CAE(num_pooling=NUM_POOLING, num_filter=NUM_FILTER).to(DEVICE)
     match REFINER:
         case Refiner.LSTM:
             refiner = LSTMRefiner(NUM_FILTER * (128//(2**NUM_POOLING)), LSTM_DIM, LSTM_LAYER).to(DEVICE)
@@ -103,11 +109,11 @@ def process_one_fold(train_idx, val_idx, test_idx, fold):
     dual_print(f"Fold:{fold} training")
     train_loader = DataLoader(Subset(dataset, train_idx), batch_size=BATCH_SIZE, shuffle=True, generator=generator)
     val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE, shuffle=False, generator=generator)
-    model_path = f"model/lstm_fold{fold}.pth" if NUM_POOLING == 1 else f"model/lstm_{NUM_POOLING}_fold{fold}.pth"
+    model_path = f"{MODEL_DIR}/model{fold}.pth" if NUM_POOLING == 1 else f"{MODEL_DIR}/model_{NUM_POOLING}_fold{fold}.pth"
     if TRAIN:
         model_state = training(model, refiner, train_loader, val_loader)
         torch.save(model_state, model_path)
-        with open(f"log/{sys.argv[1]}.log", 'a') as f:
+        with open(f"{LOG_DIR}/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Model saved for {fold} fold\n")
     else:
         model_state = torch.load(model_path)
@@ -219,7 +225,7 @@ def training(model, refiner, train_loader, val_loader):
                 val_loss += loss.item()
 
         scheduler.step(val_loss/len(val_loader))
-        with open(f"log/{sys.argv[1]}.log", 'a') as f:
+        with open(f"{LOG_DIR}/{sys.argv[1]}.log", 'a') as f:
             f.write(f"Epoch [{epoch}/{EPOCHS}], Training Loss: {train_loss/len(train_loader):.6f}, Validation Loss: {val_loss/len(val_loader):.6f}\n")
 
         # Early stopping
@@ -234,7 +240,7 @@ def training(model, refiner, train_loader, val_loader):
             else:
                 no_improve_epochs += 1
                 if no_improve_epochs >= PATIENCE:
-                    with open(f"log/{sys.argv[1]}.log", 'a') as f:
+                    with open(f"{LOG_DIR}/{sys.argv[1]}.log", 'a') as f:
                         f.write(f"Early stopping at epoch {epoch}\n")
                     break
 
@@ -246,7 +252,7 @@ def training(model, refiner, train_loader, val_loader):
             'refiner': refiner.state_dict() if refiner else None
         }
 
-def evaluation(model, refiner, data_loader, name, plot=True):
+def evaluation(model, refiner, data_loader, name):
     dual_print(f"Evaluating {name}")
     model.eval()
     if refiner:
@@ -270,7 +276,7 @@ def evaluation(model, refiner, data_loader, name, plot=True):
             code_size = model.encode(batch)[0].numel()
 
         CR = INPUT_TIME_DIM * INPUT_CHANNEL_DIM / code_size * ((BIT_RESOLUTION/QUANT_BIT) if (QUANT_BIT>0) else 1)
-        if plot:
+        if PLOT_RESULT:
             original = batch[0].squeeze().cpu().numpy()
             x = batch[0].unsqueeze(0)
             reconstructed = _recon(model, refiner, x).squeeze().cpu().numpy()
@@ -321,15 +327,15 @@ if __name__ == '__main__':
         print("Usage: python3 training.py testing_name")
         exit(1)
 
-    Path("log").mkdir(exist_ok=True)
-    Path("visual").mkdir(exist_ok=True)
-    Path("model").mkdir(exist_ok=True)
+    Path(LOG_DIR).mkdir(exist_ok=True)
+    Path(PLOT_DIR).mkdir(exist_ok=True)
+    Path(MODEL_DIR).mkdir(exist_ok=True)
     Path(RESULT_DIR).mkdir(exist_ok=True)
 
     for fold in range(1, KFOLDS+1):
         if fold not in [1, 10] and not ALL_KFOLD:
             continue
-        with open(f"log/{sys.argv[1]}.log", 'a') as f:
+        with open(f"{LOG_DIR}/{sys.argv[1]}.log", 'a') as f:
             f.write(f"\nFold {fold}/{KFOLDS}\n")
         
         test_idx = []

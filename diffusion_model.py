@@ -230,21 +230,6 @@ class LatentDiffusion(nn.Module):
             x = alpha_bar_prev.sqrt()*x0 + (1-alpha_bar_prev).sqrt()*noise_pred 
         return x0
         
-class Quantizer(nn.Module):
-    def __init__(self, num_bits=8):
-        super().__init__()
-        level = 2 ** num_bits
-        self.step = 2.0 / (level-1)
-
-    def forward(self, x):
-        # Normalization
-        scale = x.detach().abs().max()
-        x_norm = x / scale
-
-        x_q = torch.round(x_norm / self.step) * self.step
-        x_q = x_q * scale
-        return x_q
-
 class EMA:
     def __init__(self, model: nn.Module, decay: float = 0.999):
         super().__init__()
